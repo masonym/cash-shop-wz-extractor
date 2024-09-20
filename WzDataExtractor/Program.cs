@@ -42,7 +42,7 @@ namespace WzDataExtractor
                     {
                         List<int> itemIds = ExtractCommodityData(etcWz);
                         Console.WriteLine($"Found {itemIds.Count} items in Commodity.img");
-                        List<ItemData> itemDataList = ExtractItemData(itemIds, characterWz, stringWz, itemWz);
+                        List<ItemData> itemDataList = ExtractItemData(itemIds, characterWz, stringWz, itemWz, etcWz);
                         Console.WriteLine("Commodity.img found. Extracting data...");
 
                         string jsonOutput = JsonSerializer.Serialize(itemDataList, new JsonSerializerOptions { WriteIndented = true });
@@ -180,7 +180,7 @@ namespace WzDataExtractor
                             itemIds.Add(itemId);
 
                             // Optionally, print out the term dates for verification
-                            Console.WriteLine($"Item ID: {itemId}, Start: {termStartProp.GetString()}, End: {termEndProp.GetString()}");
+                            Console.WriteLine($"Item ID: {itemId}, Start: {termStartProp.ToString()}, End: {termEndProp.ToString()}");
                         }
                     }
                 }
@@ -193,14 +193,13 @@ namespace WzDataExtractor
             return itemIds;
         }
 
-        static List<ItemData> ExtractItemData(List<int> itemIds, WzFile characterWz, WzFile stringWz, WzFile itemWz)
+        static List<ItemData> ExtractItemData(List<int> itemIds, WzFile characterWz, WzFile stringWz, WzFile itemWz, WzFile etcWz)
         {
             List<ItemData> itemDataList = new List<ItemData>();
-            Console.WriteLine(itemDataList);
+            WzImage commodityImg = etcWz.WzDirectory["Commodity.img"] as WzImage;
             foreach (int itemId in itemIds)
             {
                 ItemData itemData = new ItemData { ItemId = itemId };
-                Console.WriteLine(itemId);
 
                 // Extract data from Character.wz
                 WzImage characterImg = characterWz.GetObjectFromPath($"Weapon/{itemId:D8}.img") as WzImage;
@@ -239,7 +238,26 @@ namespace WzDataExtractor
         {
             public int ItemId { get; set; }
             public string Name { get; set; }
-            // Add other properties as needed
+            public string TermStart { get; set; }
+            public string TermEnd { get; set; }
+            public int CommodityFlag { get; set; }
+            public int Price { get; set; }
+            public int Count { get; set; }
+            public int Priority { get; set; }
+            public int Period { get; set; }
+            public int ReqPOP { get; set; }
+            public int ReqLEV { get; set; }
+            public int Gender { get; set; }
+            public bool OnSale { get; set; }
+            public string ItemType { get; set; }
+            public int TUC { get; set; }
+            public int IncPAD { get; set; }
+            public int IncMAD { get; set; }
+            public int ReqSTR { get; set; }
+            public int ReqDEX { get; set; }
+            public int ReqINT { get; set; }
+            public int ReqLUK { get; set; }
+            public bool Cash { get; set; }
         }
     }
 }
