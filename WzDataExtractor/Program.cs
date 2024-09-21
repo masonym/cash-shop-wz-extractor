@@ -502,8 +502,9 @@ namespace WzDataExtractor
                     Console.WriteLine("Successfully parsed Etc.wz");
                     PrintWzStructure(etcWz.WzDirectory, 0);
 
-                    List<int> itemIds = ExtractCommodityData(etcWz);
-                    var itemData = ExtractItemData(itemIds, characterWz, stringWz, itemWz, etcWz);
+                    //List<int> itemIds = ExtractCommodityData(etcWz);
+                    var itemData = ExtractItemData(etcWz, stringWz, itemWz);
+                    var itemIds = itemData.Select(item => item.ItemId).Distinct().ToList();
 
                     outputPath = "output/CharacterItems";
                     string characterPath = @"WzFiles\Character";
@@ -720,90 +721,168 @@ namespace WzDataExtractor
                 commodityImg.ParseImage();
                 foreach (WzImageProperty prop in commodityImg.WzProperties)
                 {
-                    // Check if both termStart and termEnd exist
                     WzImageProperty termStartProp = prop["termStart"];
                     WzImageProperty termEndProp = prop["termEnd"];
 
                     if (termStartProp != null && termEndProp != null)
                     {
-                        WzImageProperty itemIdProp = prop["itemId"];
+                        WzImageProperty itemIdProp = prop["ItemId"];
                         if (itemIdProp != null)
                         {
                             int itemId = itemIdProp.GetInt();
                             itemIds.Add(itemId);
 
-                            // Optionally, print out the term dates for verification
                             Console.WriteLine($"Item ID: {itemId}, Start: {termStartProp.ToString()}, End: {termEndProp.ToString()}");
                         }
                     }
                 }
-                Console.WriteLine($"Found {itemIds.Count} items with termStart and termEnd");
+                Console.WriteLine($"Found {itemIds.Count} items");
             }
             else
             {
                 Console.WriteLine("Commodity.img not found in Etc.wz");
             }
-
 
             return itemIds;
         }
 
-        static List<ItemData> ExtractItemData(List<int> itemIds, WzFile characterWz, WzFile stringWz, WzFile itemWz, WzFile etcWz)
+        static List<ItemData> ExtractItemData(WzFile etcWz, WzFile stringWz, WzFile itemWz)
         {
             List<ItemData> itemDataList = new List<ItemData>();
             WzImage commodityImg = etcWz.WzDirectory["Commodity.img"] as WzImage;
-            WzImage stringItemImg = stringWz.WzDirectory["Item.img"] as WzImage;
+            WzImage cashPackageImg = etcWz.WzDirectory["CashPackage.img"] as WzImage;
 
-            Console.WriteLine("Debugging: Processing items with termStart and termEnd");
-
-            if (commodityImg != null)
+            if (commodityImg == null || cashPackageImg == null)
             {
-                foreach (WzImageProperty entry in commodityImg.WzProperties)
+                Console.WriteLine("Required images not found in Etc.wz");
+                return itemDataList;
+            }
+
+            // First, process Commodity.img to get package IDs and items with termStart/termEnd
+            Dictionary<int, ItemData> packageItems = new Dictionary<int, ItemData>();
+            HashSet<int> relevantSNs = new HashSet<int>();
+
+            foreach (WzImageProperty entry in commodityImg.WzProperties)
+            {
+                if (entry is WzSubProperty subProp)
                 {
-                    if (entry is WzSubProperty subProp)
+                    int itemId = subProp["ItemId"]?.GetInt() ?? 0;
+                    int sn = subProp["SN"]?.GetInt() ?? 0;
+                    bool hasTerms = subProp["termStart"] != null && subProp["termEnd"] != null;
+
+                    if (itemId.ToString().StartsWith("910") && hasTerms)  // It's a package
                     {
-                        // Check if both termStart and termEnd exist
-                        if (subProp["termStart"] != null && subProp["termEnd"] != null)
-                        {
-                            int itemId = subProp["ItemId"]?.GetInt() ?? 0;
-                            if (itemIds.Contains(itemId))
-                            {
-                                Console.WriteLine($"Processing Item ID: {itemId}");
-                                ItemData itemData = new ItemData { ItemId = itemId };
-
-                                itemData.SN = subProp["SN"]?.GetInt() ?? 0;
-                                itemData.Count = subProp["Count"]?.GetInt() ?? 0;
-                                itemData.Price = subProp["Price"]?.GetInt() ?? 0;
-                                itemData.Bonus = subProp["Bonus"]?.GetInt() ?? 0;
-                                itemData.Period = subProp["Period"]?.GetInt() ?? 0;
-                                itemData.Priority = subProp["Priority"]?.GetInt() ?? 0;
-                                itemData.ReqPOP = subProp["ReqPOP"]?.GetInt() ?? 0;
-                                itemData.ReqLEV = subProp["ReqLEV"]?.GetInt() ?? 0;
-                                itemData.Gender = subProp["Gender"]?.GetInt() ?? 0;
-                                itemData.OnSale = subProp["OnSale"]?.GetInt() == 1;
-                                itemData.TermStart = subProp["termStart"]?.ToString();
-                                itemData.TermEnd = subProp["termEnd"]?.ToString();
-                                itemData.PbCash = subProp["PbCash"]?.GetInt() ?? 0;
-                                itemData.PbPoint = subProp["PbPoint"]?.GetInt() ?? 0;
-                                itemData.PbGift = subProp["PbGift"]?.GetInt() ?? 0;
-                                itemData.Refundable = subProp["Refundable"]?.GetInt() == 1;
-                                itemData.WebShop = subProp["WebShop"]?.GetInt() == 1;
-                                itemData.IsGift = subProp["IsGift"]?.GetInt() == 1;
-                                itemData.GameWorld = subProp["GameWorld"]?.ToString();
-
-                                itemDataList.Add(itemData);
-                            }
-                        }
+                        packageItems[itemId] = CreateItemData(subProp);
+                        relevantSNs.Add(sn);
+                    }
+                    else if (hasTerms)  // Regular item with termStart and termEnd
+                    {
+                        itemDataList.Add(CreateItemData(subProp));
+                        relevantSNs.Add(sn);
                     }
                 }
             }
-            else
+
+            // Process CashPackage.img for the packages we found
+            foreach (var packageItem in packageItems)
             {
-                Console.WriteLine("Commodity.img not found in Etc.wz");
+                WzImageProperty packageProp = cashPackageImg[packageItem.Key.ToString()];
+                if (packageProp != null && packageProp["SN"] is WzSubProperty snSubProp)
+                {
+                    foreach (WzImageProperty itemProp in snSubProp.WzProperties)
+                    {
+                        int contentSN = itemProp.GetInt();
+                        relevantSNs.Add(contentSN);
+                    }
+                }
             }
+
+            // Now process Commodity.img again to create ItemData objects for package contents
+            foreach (WzImageProperty entry in commodityImg.WzProperties)
+            {
+                if (entry is WzSubProperty subProp)
+                {
+                    int sn = subProp["SN"]?.GetInt() ?? 0;
+                    if (relevantSNs.Contains(sn) && !itemDataList.Any(item => item.SN == sn))
+                    {
+                        ItemData itemData = CreateItemData(subProp);
+                        itemData.IsPackageContent = true;
+
+                        // Find which package this item belongs to
+                        foreach (var packageItem in packageItems)
+                        {
+                            WzImageProperty packageProp = cashPackageImg[packageItem.Key.ToString()];
+                            if (packageProp != null && packageProp["SN"] is WzSubProperty snSubProp)
+                            {
+                                if (snSubProp.WzProperties.Any(p => p.GetInt() == sn))
+                                {
+                                    itemData.PackageId = packageItem.Key;
+                                    break;
+                                }
+                            }
+                        }
+
+                        itemDataList.Add(itemData);
+                    }
+                }
+            }
+
+            // Add the package items themselves
+            itemDataList.AddRange(packageItems.Values);
 
             Console.WriteLine($"Total items processed: {itemDataList.Count}");
             return itemDataList;
+        }
+
+        static ItemData CreateItemData(WzSubProperty subProp)
+        {
+            return new ItemData
+            {
+                ItemId = subProp["ItemId"]?.GetInt() ?? 0,
+                SN = subProp["SN"]?.GetInt() ?? 0,
+                Count = subProp["Count"]?.GetInt() ?? 0,
+                Price = subProp["Price"]?.GetInt() ?? 0,
+                Bonus = subProp["Bonus"]?.GetInt() ?? 0,
+                Period = subProp["Period"]?.GetInt() ?? 0,
+                Priority = subProp["Priority"]?.GetInt() ?? 0,
+                ReqPOP = subProp["ReqPOP"]?.GetInt() ?? 0,
+                ReqLEV = subProp["ReqLEV"]?.GetInt() ?? 0,
+                Gender = subProp["Gender"]?.GetInt() ?? 0,
+                OnSale = subProp["OnSale"]?.GetInt() == 1,
+                TermStart = subProp["termStart"]?.ToString(),
+                TermEnd = subProp["termEnd"]?.ToString(),
+                PbCash = subProp["PbCash"]?.GetInt() ?? 0,
+                PbPoint = subProp["PbPoint"]?.GetInt() ?? 0,
+                PbGift = subProp["PbGift"]?.GetInt() ?? 0,
+                Refundable = subProp["Refundable"]?.GetInt() == 1,
+                WebShop = subProp["WebShop"]?.GetInt() == 1,
+                IsGift = subProp["IsGift"]?.GetInt() == 1,
+                GameWorld = subProp["GameWorld"]?.ToString()
+            };
+        }
+
+        static void ProcessPackageContents(WzImage cashPackageImg, int packageId, ItemData packageData, List<ItemData> itemDataList)
+        {
+            WzImageProperty packageProp = cashPackageImg[packageId.ToString()];
+            if (packageProp != null && packageProp["SN"] is WzSubProperty snProp)
+            {
+                foreach (WzImageProperty itemProp in snProp.WzProperties)
+                {
+                    int contentItemId = itemProp.GetInt();
+                    ItemData contentItemData = new ItemData
+                    {
+                        ItemId = contentItemId,
+                        SN = packageData.SN,
+                        TermStart = packageData.TermStart,
+                        TermEnd = packageData.TermEnd,
+                        Price = packageData.Price,
+                        // Copy other relevant fields from packageData
+                        IsPackageContent = true,
+                        PackageId = packageId
+                    };
+                    itemDataList.Add(contentItemData);
+                }
+            }
         }
 
         static void DumpEtcWzData(WzFile etcWz)
@@ -885,6 +964,8 @@ namespace WzDataExtractor
 
         class ItemData
         {
+            public bool IsPackageContent { get; set; }
+            public int? PackageId { get; set; }
             public int ItemId { get; set; }
             public int SN { get; set; }
             // public string Name { get; set; }
