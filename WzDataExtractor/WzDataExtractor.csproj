@@ -2,12 +2,14 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.0.1641" />
+    <PackageReference Include="MonoGame.Framework.WindowsDX" Version="3.8.0.1641" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.8" />
   </ItemGroup>
 
@@ -17,6 +19,9 @@
     </Reference>
     <Reference Include="MapleLib">
       <HintPath>..\lib\MapleLib.dll</HintPath>
+    </Reference>
+    <Reference Include="MonoGame.Framework">
+      <HintPath>..\..\MapleLib\packages\MonoGame.Framework.WindowsDX.3.8.1.303\lib\net6.0-windows7.0\MonoGame.Framework.dll</HintPath>
     </Reference>
     <Reference Include="SharpDX">
       <HintPath>..\..\MapleLib\packages\SharpDX.4.2.0\lib\net45\SharpDX.dll</HintPath>

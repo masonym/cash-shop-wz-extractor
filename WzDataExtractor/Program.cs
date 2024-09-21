@@ -10,43 +10,152 @@ using MapleLib.WzLib;
 using MapleLib.WzLib.WzProperties;
 using MapleLib.WzLib.WzStructure.Data.ItemStructure;
 using static System.Net.Mime.MediaTypeNames;
+using SharpDX.DirectWrite;
 
 namespace WzDataExtractor
 {
+    public class CanvasManager
+    {
+        private Dictionary<string, WzFile> canvasFiles = new Dictionary<string, WzFile>();
+
+        public void AddCanvasFile(string category, string filePath)
+        {
+            Console.WriteLine($"Adding canvas file for category {category}: {filePath}");
+                if (File.Exists(filePath))
+                {
+                    WzFile canvasWzFile = new WzFile(filePath, WzMapleVersion.CLASSIC);
+                    canvasWzFile.ParseWzFile();
+                    canvasFiles[category] = canvasWzFile;
+                    Console.WriteLine($"Successfully added canvas file for {category}");
+                    PrintWzFileContents(canvasWzFile);
+                }
+                else
+                {
+                    Console.WriteLine($"Canvas file not found: {filePath}");
+                }
+        }
+
+        public WzImage GetCanvasImage(string category, string imageName)
+        {
+            if (canvasFiles.TryGetValue(category, out WzFile canvasFile))
+            {
+                return canvasFile.WzDirectory.GetImageByName(imageName);
+            }
+            return null;
+        }
+
+        private void PrintWzFileContents(WzFile file)
+        {
+            Console.WriteLine($"Contents of {file.Name}:");
+            foreach (var image in file.WzDirectory.WzImages)
+            {
+                Console.WriteLine($"  - {image.Name}");
+            }
+        }
+
+        public void Dispose()
+        {
+            foreach (var canvasFile in canvasFiles.Values)
+            {
+                canvasFile.Dispose();
+            }
+            canvasFiles.Clear();
+        }
+    }
+
+
     public class CharacterWzDumper
     {
+        private static XmlWriterSettings XmlSettings = new XmlWriterSettings
+        {
+            Indent = true,
+            IndentChars = "    ",
+            Encoding = System.Text.Encoding.UTF8
+        };
+
         public static void DumpCharacterWzData(string characterWzPath, List<int> itemIds, string outputPath)
         {
-            var files = GetWzFilesInFolder(characterWzPath);
-            foreach (var file in files)
+            var allFiles = GetWzFilesInFolder(characterWzPath);
+            var groupedFiles = GroupWzFilesByCategory(allFiles);
+            var canvasManager = new CanvasManager();
+
+            foreach (var category in groupedFiles.Keys)
             {
-                Console.WriteLine($"Processing file: {file}");
-                using (WzFile wzFile = new WzFile(file, WzMapleVersion.CLASSIC))
+                Console.WriteLine($"Processing category: {category}");
+
+                // Add canvas files to the manager
+                foreach (var canvasFile in groupedFiles[category].CanvasFiles)
                 {
-                    wzFile.ParseWzFile();
-                    foreach (int itemId in itemIds)
+                    Console.WriteLine($"Adding canvas file: {canvasFile}");
+                    canvasManager.AddCanvasFile(category, canvasFile);
+                }
+
+                // Process main files
+                foreach (var file in groupedFiles[category].MainFiles)
+                {
+                    Console.WriteLine($"Processing file: {file}");
+                    using (WzFile wzFile = new WzFile(file, WzMapleVersion.CLASSIC))
                     {
-                        WzImage itemImg = FindItemImageRecursive(wzFile.WzDirectory, itemId);
-                        if (itemImg != null)
+                        wzFile.ParseWzFile();
+
+                        foreach (int itemId in itemIds)
                         {
-                            string subfolder = GetCharacterWzSubfolder(itemId);
-                            DumpItemData(itemImg, itemId, Path.Combine(outputPath, subfolder));
+                            WzImage itemImg = FindItemImageRecursive(wzFile.WzDirectory, itemId);
+                            if (itemImg != null)
+                            {
+                                string subfolder = GetCharacterWzSubfolder(itemId);
+                                DumpItemData(itemImg, itemId, Path.Combine(outputPath, subfolder), category, canvasManager);
+                            }
                         }
                     }
                 }
             }
+
+            canvasManager.Dispose();
+        }
+
+        private static string CleanFileName(string fileName)
+        {
+            return string.Join("_", fileName.Split(Path.GetInvalidFileNameChars()));
+        }
+
+        private static Dictionary<string, (List<string> CanvasFiles, List<string> MainFiles)> GroupWzFilesByCategory(List<string> files)
+        {
+            var groupedFiles = new Dictionary<string, (List<string> CanvasFiles, List<string> MainFiles)>();
+
+            foreach (var file in files)
+            {
+                string directory = Path.GetDirectoryName(file);
+                string category = Path.GetFileName(directory);
+                bool isCanvas = false;
+
+                if (category == "_Canvas")
+                {
+                    category = Path.GetFileName(Path.GetDirectoryName(directory));
+                    isCanvas = true;
+                }
+
+                if (!groupedFiles.ContainsKey(category))
+                {
+                    groupedFiles[category] = (new List<string>(), new List<string>());
+                }
+
+                if (isCanvas)
+                {
+                    groupedFiles[category].CanvasFiles.Add(file);
+                }
+                else
+                {
+                    groupedFiles[category].MainFiles.Add(file);
+                }
+            }
+
+            return groupedFiles;
         }
 
         private static List<string> GetWzFilesInFolder(string path)
         {
-            List<string> wzFiles = new List<string>();
-            wzFiles.AddRange(Directory.GetFiles(path, "*.wz"));
-            string[] dirs = Directory.GetDirectories(path);
-            foreach (var dir in dirs)
-            {
-                wzFiles.AddRange(Directory.GetFiles(dir, "*.wz"));
-            }
-            return wzFiles.Where(f => Regex.IsMatch(Path.GetFileName(f), @"\d{3}\.wz$", RegexOptions.IgnoreCase)).ToList();
+            return Directory.GetFiles(path, "*.wz", SearchOption.AllDirectories).ToList();
         }
 
         private static WzImage FindItemImageRecursive(WzDirectory directory, int itemId)
@@ -73,8 +182,7 @@ namespace WzDataExtractor
 
         private static string GetCharacterWzSubfolder(int itemId)
         {
-            int category = itemId / 10000; // Extract category
-
+            int category = itemId / 10000;
             return category switch
             {
                 >= 2 and <= 5 => "Face",
@@ -95,16 +203,14 @@ namespace WzDataExtractor
             };
         }
 
-        private static void DumpItemData(WzImage itemImg, int itemId, string outputPath)
+        private static void DumpItemData(WzImage itemImg, int itemId, string outputPath, string category, CanvasManager canvasManager)
         {
-            if (!Directory.Exists(outputPath))
-            {
-                Directory.CreateDirectory(outputPath);
-            }
+            string itemFolder = Path.Combine(outputPath, $"{itemId:D8}.img");
+            Directory.CreateDirectory(itemFolder);
 
             string xmlPath = Path.Combine(outputPath, $"{itemId:D8}.xml");
             using (StreamWriter sw = new StreamWriter(xmlPath))
-            using (XmlWriter xmlWriter = XmlWriter.Create(sw, new XmlWriterSettings { Indent = true }))
+            using (XmlWriter xmlWriter = XmlWriter.Create(sw, XmlSettings))
             {
                 xmlWriter.WriteStartDocument();
                 xmlWriter.WriteStartElement("imgdir");
@@ -112,7 +218,7 @@ namespace WzDataExtractor
 
                 foreach (WzImageProperty prop in itemImg.WzProperties)
                 {
-                    DumpProperty(xmlWriter, prop, outputPath);
+                    DumpProperty(xmlWriter, prop, itemFolder, "", category, canvasManager);
                 }
 
                 xmlWriter.WriteEndElement();
@@ -120,102 +226,196 @@ namespace WzDataExtractor
             }
         }
 
-        private static void DumpProperty(XmlWriter xmlWriter, WzImageProperty prop, string outputPath)
+        private static void DumpProperty(XmlWriter xmlWriter, WzImageProperty prop, string outputPath, string currentPath, string category, CanvasManager canvasManager)
         {
             switch (prop.PropertyType)
             {
                 case WzPropertyType.Canvas:
-                    DumpCanvasProperty(xmlWriter, (WzCanvasProperty)prop, outputPath);
+                    DumpCanvasProperty(xmlWriter, (WzCanvasProperty)prop, outputPath, currentPath, category, canvasManager);
                     break;
                 case WzPropertyType.Vector:
                     DumpVectorProperty(xmlWriter, (WzVectorProperty)prop);
                     break;
+                case WzPropertyType.Convex:
+                    DumpConvexProperty(xmlWriter, (WzConvexProperty)prop, outputPath, currentPath, category, canvasManager);
+                    break;
+                case WzPropertyType.SubProperty:
+                    DumpSubProperty(xmlWriter, (WzSubProperty)prop, outputPath, currentPath, category, canvasManager);
+                    break;
+                case WzPropertyType.Sound:
+                    //DumpSoundProperty(xmlWriter, (WzSoundProperty)prop, outputPath, currentPath);
+                    break;
+                case WzPropertyType.UOL:
+                    DumpUOLProperty(xmlWriter, (WzUOLProperty)prop);
+                    break;
                 default:
-                    xmlWriter.WriteStartElement(prop.PropertyType.ToString().ToLower());
-                    xmlWriter.WriteAttributeString("name", prop.Name);
-                    xmlWriter.WriteAttributeString("value", prop.ToString());
-                    xmlWriter.WriteEndElement();
+                    DumpSimpleProperty(xmlWriter, prop);
                     break;
             }
         }
 
-        private static void DumpCanvasProperty(XmlWriter xmlWriter, WzCanvasProperty canvasProp, string outputPath)
+
+        private static void DumpCanvasProperty(XmlWriter xmlWriter, WzCanvasProperty canvasProp, string outputPath, string currentPath, string category, CanvasManager canvasManager)
         {
             xmlWriter.WriteStartElement("canvas");
             xmlWriter.WriteAttributeString("name", canvasProp.Name);
 
-            WzPngProperty pngProp = canvasProp.PngProperty;
-            if (pngProp != null)
+            Console.WriteLine($"Processing canvas: {canvasProp.Name}");
+            Console.WriteLine($"Current category: {category}");
+
+            string fileName = CleanFileName(canvasProp.ParentImage.Name);
+            Console.WriteLine($"File name: {fileName}");
+            string pngRelativePath = Path.Combine(currentPath, canvasProp.Name + ".png");
+            string pngFullPath = Path.Combine(outputPath, pngRelativePath);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(pngFullPath));
+
+            WzImage canvasImage = canvasManager.GetCanvasImage(category, fileName);
+            if (canvasImage != null)
             {
-                xmlWriter.WriteAttributeString("width", pngProp.Width.ToString());
-                xmlWriter.WriteAttributeString("height", pngProp.Height.ToString());
+                Console.WriteLine($"Found canvas image: {canvasImage.FullPath}");
 
-                string pngFileName = $"{canvasProp.Name}.png";
-                string pngPath = Path.Combine(outputPath, pngFileName);
-
-                // Check for _inlink or _outlink
-                WzImageProperty linkProp = canvasProp.GetLinkedWzImageProperty();
-                if (linkProp != canvasProp)
+                WzCanvasProperty canvasProperty = FindCanvasProperty(canvasImage, canvasProp.Name);
+                if (canvasProperty != null)
                 {
-                    // Handle linked property
-                    if (linkProp is WzCanvasProperty linkedCanvas)
+                    try
                     {
-                        pngProp = linkedCanvas.PngProperty;
+                        using (Bitmap bmp = canvasProperty.PngProperty.GetImage(false))
+                        {
+                            if (bmp != null)
+                            {
+                                bmp.Save(pngFullPath, System.Drawing.Imaging.ImageFormat.Png);
+                                Console.WriteLine($"Saved image to: {pngFullPath}");
+                                xmlWriter.WriteAttributeString("width", bmp.Width.ToString());
+                                xmlWriter.WriteAttributeString("height", bmp.Height.ToString());
+                                xmlWriter.WriteAttributeString("png", pngRelativePath);
+                            }
+                            else
+                            {
+                                Console.WriteLine("Failed to get bitmap from PNG property.");
+                            }
+                        }
                     }
-                    else if (linkProp is WzPngProperty linkedPng)
+                    catch (Exception ex)
                     {
-                        pngProp = linkedPng;
+                        Console.WriteLine($"Error saving image: {ex.Message}");
                     }
-
-                    xmlWriter.WriteAttributeString("link", linkProp.FullPath);
                 }
-
-                // Save PNG
-                using (Bitmap bmp = pngProp.GetImage(false))
+                else
                 {
-                    if (bmp != null)
-                    {
-                        bmp.Save(pngPath, System.Drawing.Imaging.ImageFormat.Png);
-                        xmlWriter.WriteAttributeString("png", pngFileName);
-                    }
+                    Console.WriteLine($"Canvas property '{canvasProp.Name}' not found in the canvas image.");
                 }
             }
+            else
+            {
+                Console.WriteLine($"Canvas image not found for category: {category}, file: {fileName}");
+            }
 
-            // Dump sub-properties
             foreach (WzImageProperty subProp in canvasProp.WzProperties)
             {
-                DumpProperties(xmlWriter, subProp, outputPath);
+                DumpProperty(xmlWriter, subProp, outputPath, Path.Combine(currentPath, canvasProp.Name), category, canvasManager);
             }
 
-            xmlWriter.WriteEndElement(); // canvas
+            xmlWriter.WriteEndElement();
         }
 
-        private static void DumpProperties(XmlWriter xmlWriter, WzImageProperty prop, string outputPath)
+        private static WzCanvasProperty FindCanvasProperty(WzImage image, string propertyName)
         {
-            switch (prop.PropertyType)
+            foreach (WzImageProperty prop in image.WzProperties)
             {
-                case WzPropertyType.Canvas:
-                    DumpCanvasProperty(xmlWriter, (WzCanvasProperty)prop, outputPath);
-                    break;
-                case WzPropertyType.Vector:
-                    DumpVectorProperty(xmlWriter, (WzVectorProperty)prop);
-                    break;
-                // Add cases for other property types as needed
-                default:
-                    xmlWriter.WriteStartElement(prop.PropertyType.ToString().ToLower());
-                    xmlWriter.WriteAttributeString("name", prop.Name);
-                    xmlWriter.WriteAttributeString("value", prop.ToString());
-                    xmlWriter.WriteEndElement();
-                    break;
+                if (prop is WzCanvasProperty canvasProp && canvasProp.Name == propertyName)
+                {
+                    return canvasProp;
+                }
+                else if (prop is WzSubProperty subProp)
+                {
+                    WzCanvasProperty result = FindCanvasPropertyInSubProperty(subProp, propertyName);
+                    if (result != null)
+                    {
+                        return result;
+                    }
+                }
             }
+            return null;
         }
 
+        private static WzCanvasProperty FindCanvasPropertyInSubProperty(WzSubProperty subProp, string propertyName)
+        {
+            foreach (WzImageProperty prop in subProp.WzProperties)
+            {
+                if (prop is WzCanvasProperty canvasProp && canvasProp.Name == propertyName)
+                {
+                    return canvasProp;
+                }
+                else if (prop is WzSubProperty nestedSubProp)
+                {
+                    WzCanvasProperty result = FindCanvasPropertyInSubProperty(nestedSubProp, propertyName);
+                    if (result != null)
+                    {
+                        return result;
+                    }
+                }
+            }
+            return null;
+        }
+
+
+        private static void DumpConvexProperty(XmlWriter xmlWriter, WzConvexProperty convexProp, string outputPath, string currentPath, string category, CanvasManager canvasManager)
+        {
+            xmlWriter.WriteStartElement("extended");
+            xmlWriter.WriteAttributeString("name", convexProp.Name);
+            foreach (WzImageProperty subProp in convexProp.WzProperties)
+            {
+                DumpProperty(xmlWriter, subProp, outputPath, Path.Combine(currentPath, convexProp.Name), category, canvasManager);
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        private static void DumpSubProperty(XmlWriter xmlWriter, WzSubProperty subProp, string outputPath, string currentPath, string category, CanvasManager canvasManager)
+        {
+            xmlWriter.WriteStartElement("imgdir");
+            xmlWriter.WriteAttributeString("name", subProp.Name);
+            foreach (WzImageProperty childProp in subProp.WzProperties)
+            {
+                DumpProperty(xmlWriter, childProp, outputPath, Path.Combine(currentPath, subProp.Name), category, canvasManager);
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        /*
+        private static void DumpSoundProperty(XmlWriter xmlWriter, WzSoundProperty soundProp, string outputPath)
+        {
+            xmlWriter.WriteStartElement("sound");
+            xmlWriter.WriteAttributeString("name", soundProp.Name);
+            string soundFileName = $"{soundProp.Name}.mp3";
+            string soundPath = Path.Combine(outputPath, soundFileName);
+            File.WriteAllBytes(soundPath, soundProp.GetBytes(false));
+            xmlWriter.WriteAttributeString("file", soundFileName);
+            xmlWriter.WriteEndElement();
+        }
+        */
         private static void DumpVectorProperty(XmlWriter xmlWriter, WzVectorProperty vectorProp)
         {
             xmlWriter.WriteStartElement("vector");
             xmlWriter.WriteAttributeString("name", vectorProp.Name);
             xmlWriter.WriteAttributeString("x", vectorProp.X.Value.ToString());
             xmlWriter.WriteAttributeString("y", vectorProp.Y.Value.ToString());
+            xmlWriter.WriteEndElement();
+        }
+
+        private static void DumpUOLProperty(XmlWriter xmlWriter, WzUOLProperty uolProp)
+        {
+            xmlWriter.WriteStartElement("uol");
+            xmlWriter.WriteAttributeString("name", uolProp.Name);
+            xmlWriter.WriteAttributeString("value", uolProp.Value);
+            xmlWriter.WriteEndElement();
+        }
+
+        private static void DumpSimpleProperty(XmlWriter xmlWriter, WzImageProperty prop)
+        {
+            xmlWriter.WriteStartElement(prop.PropertyType.ToString().ToLower());
+            xmlWriter.WriteAttributeString("name", prop.Name);
+            xmlWriter.WriteAttributeString("value", prop.ToString());
             xmlWriter.WriteEndElement();
         }
     }
@@ -294,7 +494,7 @@ namespace WzDataExtractor
             Console.ReadKey();
         }
 
-        static void PrintWzStructure(WzObject wzObject, int depth)
+        public static void PrintWzStructure(WzObject wzObject, int depth)
         {
             string indent = new string(' ', depth * 2);
             Console.WriteLine($"{indent}{wzObject.Name}");
@@ -505,64 +705,7 @@ namespace WzDataExtractor
             }
         }
 
-        static void DumpCharacterWzData(WzFile characterWz)
-        {
-            string filesFound = "";
-            string filePath = @"WzFiles\Character";
-            var files = GetWzFilesInFolder(filePath);
-            var allFiles = files.ToArray();
-            allFiles = allFiles.Where(fileName => Regex.IsMatch(fileName, "[0-9]{3}.wz$", RegexOptions.IgnoreCase)).ToArray();
-            Console.WriteLine(allFiles.Length);
 
-            foreach (var fileName in allFiles)
-            {
-                filesFound += Path.GetFileName(fileName) + ", ";
-            }
-            SortedDictionary<long, string> fileOrder = new SortedDictionary<long, string>();
-            foreach (var fileName in allFiles)
-            {
-                FileInfo wzFile = new FileInfo(fileName);
-                fileOrder.Add(DirSize(wzFile.Directory), fileName);
-            }
-            allFiles = fileOrder.Values.ToArray();
-
-            Console.WriteLine(filesFound);
-            Console.WriteLine(String.Join("\n", allFiles));
-
-            foreach (var file in allFiles)
-            {
-                ExportFile(file, "/output");
-            }
-
-            /*
-            string[] categories = { "Weapon", "Pants", "Coat", "Longcoat", "Shoes", "Glove", "Cap", "Cape", "Shield", "Accessory", "Medal", "Ring" };
-            foreach (var category in categories)
-            {
-                //Console.WriteLine($"Checking category: {category}/{itemId:D8}.img");
-                // WzObject itemImg = characterWz.GetObjectFromPath($"{category}/{itemId:D8}.img");
-                //WzObject itemImg = characterWz.WzDirectory[$"{category}/{itemId:D8}.img"];
-                //Console.WriteLine(characterWz.WzDirectory.);
-                //PrintWzStructure(characterWz.WzDirectory, 0);
-                //Console.WriteLine($"Item image: {itemImg}");
-                if (itemImg != null)
-                {
-                    string jsonOutput = JsonSerializer.Serialize(itemImg, new JsonSerializerOptions { WriteIndented = true });
-                    File.WriteAllText($"Character_{category}_{itemId}.json", jsonOutput);
-                }
-            }
-            */
-        }
-
-        static void ExportFile(string fileName, string outputFolder)
-        {
-            WzFile regFile = null;
-            regFile = new WzFile(fileName, WzMapleVersion.CLASSIC);
-            regFile.ParseWzFile();
-            Directory.CreateDirectory(@"output/");
-
-            // we want to export each `Character\{category}\{itemID}.img\` file for the given item ids
-
-        }
 
         static long DirSize(DirectoryInfo dirInfo)
         {
