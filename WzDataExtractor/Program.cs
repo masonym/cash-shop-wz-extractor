@@ -14,6 +14,7 @@ using SharpDX.DirectWrite;
 using MapleLib.WzLib.Serialization;
 using System.Xml.Serialization;
 using SharpDX.MediaFoundation.DirectX;
+using static System.Windows.Forms.LinkLabel;
 
 namespace WzDataExtractor
 {
@@ -34,7 +35,7 @@ namespace WzDataExtractor
                 }
                 canvasFiles[category].Add(canvasWzFile);
                 Console.WriteLine($"Successfully added canvas file for {category}");
-                PrintWzFileContents(canvasWzFile);
+                //PrintWzFileContents(canvasWzFile);
             }
             else
             {
@@ -214,7 +215,7 @@ namespace WzDataExtractor
             string itemFolder = Path.Combine(outputPath, $"{itemId:D8}.img");
             Directory.CreateDirectory(itemFolder);
 
-            string xmlPath = Path.Combine(outputPath, $"{itemId:D8}.xml");
+            string xmlPath = Path.Combine(outputPath, $"{itemId:D8}.img.xml");
             using (StreamWriter sw = new StreamWriter(xmlPath))
             using (XmlWriter xmlWriter = XmlWriter.Create(sw, XmlSettings))
             {
@@ -270,18 +271,48 @@ namespace WzDataExtractor
             Console.WriteLine($"Current category: {category}");
 
             string fileName = CleanFileName(canvasProp.ParentImage.Name);
+            string result = fileName;
+            if (fileName == "01041001.img")
+            {
+                Console.WriteLine("----------------------------------------------------");
+            }
+
             Console.WriteLine($"File name: {fileName}");
             string canvasCategoryOutputPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), category);
             string canvasOutputPath = Path.Combine(canvasCategoryOutputPath, "_Canvas");
-            string pngRelativePath = Path.Combine(category, "_Canvas", fileName, currentPath, canvasProp.Name + ".png");
+            string pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
             string pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
 
+            WzStringProperty linkProp = (WzStringProperty)canvasProp["_outlink"] ?? (WzStringProperty)canvasProp["_inlink"];
+
+            if (linkProp != null) {
+                Console.WriteLine($"--------linkprop value ---------{linkProp.Value}");
+                Console.WriteLine($"---canvas parent--------{canvasProp.GetTopMostWzDirectory().Name}");
+                WzImageProperty linkedProp = linkProp.GetLinkedWzImageProperty();
+                if (linkedProp != null) {
+                    Console.WriteLine($"----asdasd----linkedprop value ---------{linkedProp.WzValue}");
+                    string linkPropString = linkedProp.WzValue.ToString();
+                    string[] parts = linkPropString.Split('/');
+                    result = parts.FirstOrDefault(part => part.EndsWith(".img"));
+                    pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
+                    pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
+                    Console.WriteLine($"Link prop string: {result}");
+                    
+                }
+
+
+            }
+
+
+
+            /*
             Console.WriteLine($"Output path: {outputPath}");
             Console.WriteLine($"Canvas category Path: {canvasCategoryOutputPath}");
             Console.WriteLine($"Canvas output Path: {canvasOutputPath}");
             Console.WriteLine($"Png Relative Path: {pngRelativePath}");
             Console.WriteLine($"Png Full Path: {pngFullPath}");
-            WzImage canvasImage = canvasManager.GetCanvasImage(category, fileName);
+            */
+            WzImage canvasImage = canvasManager.GetCanvasImage(category, result);
             if (canvasImage != null)
             {
                 Console.WriteLine($"Found canvas image: {canvasImage.FullPath}");
