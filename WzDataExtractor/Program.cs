@@ -16,30 +16,41 @@ namespace WzDataExtractor
 {
     public class CanvasManager
     {
-        private Dictionary<string, WzFile> canvasFiles = new Dictionary<string, WzFile>();
+        private Dictionary<string, List<WzFile>> canvasFiles = new Dictionary<string, List<WzFile>>();
 
         public void AddCanvasFile(string category, string filePath)
         {
             Console.WriteLine($"Adding canvas file for category {category}: {filePath}");
-                if (File.Exists(filePath))
+            if (File.Exists(filePath))
+            {
+                WzFile canvasWzFile = new WzFile(filePath, WzMapleVersion.CLASSIC);
+                canvasWzFile.ParseWzFile();
+                if (!canvasFiles.ContainsKey(category))
                 {
-                    WzFile canvasWzFile = new WzFile(filePath, WzMapleVersion.CLASSIC);
-                    canvasWzFile.ParseWzFile();
-                    canvasFiles[category] = canvasWzFile;
-                    Console.WriteLine($"Successfully added canvas file for {category}");
-                    PrintWzFileContents(canvasWzFile);
+                    canvasFiles[category] = new List<WzFile>();
                 }
-                else
-                {
-                    Console.WriteLine($"Canvas file not found: {filePath}");
-                }
+                canvasFiles[category].Add(canvasWzFile);
+                Console.WriteLine($"Successfully added canvas file for {category}");
+                PrintWzFileContents(canvasWzFile);
+            }
+            else
+            {
+                Console.WriteLine($"Canvas file not found: {filePath}");
+            }
         }
 
         public WzImage GetCanvasImage(string category, string imageName)
         {
-            if (canvasFiles.TryGetValue(category, out WzFile canvasFile))
+            if (canvasFiles.TryGetValue(category, out List<WzFile> categoryFiles))
             {
-                return canvasFile.WzDirectory.GetImageByName(imageName);
+                foreach (WzFile canvasFile in categoryFiles)
+                {
+                    WzImage image = canvasFile.WzDirectory.GetImageByName(imageName);
+                    if (image != null)
+                    {
+                        return image;
+                    }
+                }
             }
             return null;
         }
@@ -53,14 +64,6 @@ namespace WzDataExtractor
             }
         }
 
-        public void Dispose()
-        {
-            foreach (var canvasFile in canvasFiles.Values)
-            {
-                canvasFile.Dispose();
-            }
-            canvasFiles.Clear();
-        }
     }
 
 
@@ -111,7 +114,7 @@ namespace WzDataExtractor
                 }
             }
 
-            canvasManager.Dispose();
+            //canvasManager.Dispose();
         }
 
         private static string CleanFileName(string fileName)
