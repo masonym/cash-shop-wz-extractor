@@ -11,6 +11,9 @@ using MapleLib.WzLib.WzProperties;
 using MapleLib.WzLib.WzStructure.Data.ItemStructure;
 using static System.Net.Mime.MediaTypeNames;
 using SharpDX.DirectWrite;
+using MapleLib.WzLib.Serialization;
+using System.Xml.Serialization;
+using SharpDX.MediaFoundation.DirectX;
 
 namespace WzDataExtractor
 {
@@ -268,11 +271,16 @@ namespace WzDataExtractor
 
             string fileName = CleanFileName(canvasProp.ParentImage.Name);
             Console.WriteLine($"File name: {fileName}");
-            string pngRelativePath = Path.Combine(currentPath, canvasProp.Name + ".png");
-            string pngFullPath = Path.Combine(outputPath, pngRelativePath);
+            string canvasCategoryOutputPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), category);
+            string canvasOutputPath = Path.Combine(canvasCategoryOutputPath, "_Canvas");
+            string pngRelativePath = Path.Combine(category, "_Canvas", fileName, currentPath, canvasProp.Name + ".png");
+            string pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
 
-            Directory.CreateDirectory(Path.GetDirectoryName(pngFullPath));
-
+            Console.WriteLine($"Output path: {outputPath}");
+            Console.WriteLine($"Canvas category Path: {canvasCategoryOutputPath}");
+            Console.WriteLine($"Canvas output Path: {canvasOutputPath}");
+            Console.WriteLine($"Png Relative Path: {pngRelativePath}");
+            Console.WriteLine($"Png Full Path: {pngFullPath}");
             WzImage canvasImage = canvasManager.GetCanvasImage(category, fileName);
             if (canvasImage != null)
             {
@@ -287,6 +295,7 @@ namespace WzDataExtractor
                         {
                             if (bmp != null)
                             {
+                                Directory.CreateDirectory(Path.GetDirectoryName(pngFullPath));
                                 bmp.Save(pngFullPath, System.Drawing.Imaging.ImageFormat.Png);
                                 Console.WriteLine($"Saved image to: {pngFullPath}");
                                 xmlWriter.WriteAttributeString("width", bmp.Width.ToString());
@@ -430,9 +439,10 @@ namespace WzDataExtractor
             string etcWzPath = @"WzFiles\Etc\Etc_000.wz";
             string characterWzPath = @"WzFiles\Character\Character_000.wz";
             //string accessoryWzPath = @"WzFiles\Character\Accessory\Accessory_000.wz";
-            string stringWzPath = @"WzFiles\String\String.wz";
-            string itemWzPath = @"WzFiles\Item\Item.wz";
-
+            string stringWzPath = @"WzFiles\String\String_000.wz";
+            string itemWzPath = @"WzFiles\Item\Item_000.wz";
+            
+            WzFile etcWz = new WzFile(etcWzPath, WzMapleVersion.CLASSIC);
             WzFile characterWz = new WzFile(characterWzPath, WzMapleVersion.CLASSIC);
             WzFile stringWz = new WzFile(stringWzPath, WzMapleVersion.CLASSIC);
             WzFile itemWz = new WzFile(itemWzPath, WzMapleVersion.CLASSIC);
@@ -443,11 +453,17 @@ namespace WzDataExtractor
             stringWz.ParseWzFile();
             itemWz.ParseWzFile();
 
+            string outputPath = "output";
+
+            //ExtractWzFile(etcWzPath, outputPath, WzMapleVersion.CLASSIC);
+            //ExtractWzFile(stringWzPath, outputPath, WzMapleVersion.CLASSIC);
+            //ExtractItemDirectory(itemWzPath, outputPath, WzMapleVersion.CLASSIC);
+
             //accessoryWz.ParseWzFile();
 
             try
             {
-                WzFile etcWz = new WzFile(etcWzPath, WzMapleVersion.CLASSIC);
+                
                 WzFileParseStatus parseStatus = etcWz.ParseWzFile();
 
                 if (parseStatus == WzFileParseStatus.Success)
@@ -458,9 +474,15 @@ namespace WzDataExtractor
                     List<int> itemIds = ExtractCommodityData(etcWz);
                     var itemData = ExtractItemData(itemIds, characterWz, stringWz, itemWz, etcWz);
 
-                    string outputPath = "output/CharacterItems";
+                    outputPath = "output/CharacterItems";
                     string characterPath = @"WzFiles\Character";
+
+                    string itemOutputPath = "output/Item";
+                    string itemPath = @"WzFiles\Item";
                     CharacterWzDumper.DumpCharacterWzData(characterPath, itemIds, outputPath);
+
+                    
+
 
                     // Dump Etc.wz and String.wz data
                     //DumpEtcWzData(etcWz);
@@ -496,6 +518,85 @@ namespace WzDataExtractor
             Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey();
         }
+        static void ExtractItemDirectory(string itemDirPath, string outputPath, WzMapleVersion version)
+        {
+            try
+            {
+                Console.WriteLine($"Attempting to access Item directory: {itemDirPath}");
+
+                if (!Directory.Exists(itemDirPath))
+                {
+                    Console.WriteLine($"Item directory not found: {itemDirPath}");
+                    return;
+                }
+
+                // Try to get a list of all .wz files without using SearchOption.AllDirectories
+                List<string> wzFiles = new List<string>();
+                foreach (string dir in Directory.GetDirectories(itemDirPath))
+                {
+                    Console.WriteLine($"Scanning subdirectory: {dir}");
+                    try
+                    {
+                        wzFiles.AddRange(Directory.GetFiles(dir, "*.wz"));
+                    }
+                    catch (UnauthorizedAccessException uae)
+                    {
+                        Console.WriteLine($"Cannot access subdirectory {dir}: {uae.Message}");
+                    }
+                }
+
+                Console.WriteLine($"Found {wzFiles.Count} .wz files in Item directory");
+
+                foreach (string wzFilePath in wzFiles)
+                {
+                    string relativePath = Path.GetRelativePath(itemDirPath, wzFilePath);
+                    string targetDir = Path.Combine(outputPath, "Item", Path.GetDirectoryName(relativePath));
+
+                    Console.WriteLine($"Extracting: {wzFilePath} to {targetDir}");
+                    ExtractWzFile(wzFilePath, targetDir, version);
+                }
+
+                Console.WriteLine($"Successfully extracted all Item WZ files to {Path.Combine(outputPath, "Item")}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error extracting Item directory: {ex.Message}");
+                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
+            }
+        }
+
+        static void ExtractWzFile(string wzFilePath, string outputPath, WzMapleVersion version)
+        {
+            WzFile wzFile = null;
+            try
+            {
+                wzFile = new WzFile(wzFilePath, version);
+                WzFileParseStatus parseStatus = wzFile.ParseWzFile();
+
+                if (parseStatus != WzFileParseStatus.Success)
+                {
+                    Console.WriteLine($"Failed to parse {Path.GetFileName(wzFilePath)}. Status: {parseStatus}");
+                    return;
+                }
+
+                WzPngMp3Serializer serializer = new WzPngMp3Serializer();
+                string directoryPath = Path.Combine(outputPath, Path.GetFileNameWithoutExtension(wzFilePath));
+                Directory.CreateDirectory(directoryPath);
+
+                serializer.SerializeFile(wzFile, directoryPath);
+
+                Console.WriteLine($"Successfully extracted {Path.GetFileName(wzFilePath)} to {directoryPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error extracting {Path.GetFileName(wzFilePath)}: {ex.Message}");
+            }
+            finally
+            {
+                wzFile?.Dispose();
+            }
+        }
+
 
         public static void PrintWzStructure(WzObject wzObject, int depth)
         {
