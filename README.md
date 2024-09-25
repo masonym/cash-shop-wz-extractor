@@ -3,7 +3,7 @@ A tool that utilizes MapleLib to parse relevant wz files &amp; dump data for upc
 
 This tool uses MapleLib/WzLib to parse through Commodity.img to gather which items we need to gather info on for the current patches sales.
 
-This is the first thing I've written in and I got pretty lost in the weeds with all of the classes in WzLib, so it is very messy and bad! Maybe one day I'll re-write it.
+This is the first thing I've written in C# and I got pretty lost in the weeds with all of the classes in WzLib, so it is very messy and bad! Maybe one day I'll re-write it.
 
 # Usage
 
