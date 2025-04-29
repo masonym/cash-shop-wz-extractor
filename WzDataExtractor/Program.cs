@@ -24,7 +24,7 @@ namespace WzDataExtractor
 
         public void AddCanvasFile(string category, string filePath)
         {
-            Console.WriteLine($"Adding canvas file for category {category}: {filePath}");
+            /*Console.WriteLine($"Adding canvas file for category {category}: {filePath}");*/
             if (File.Exists(filePath))
             {
                 WzFile canvasWzFile = new WzFile(filePath, WzMapleVersion.CLASSIC);
@@ -34,12 +34,12 @@ namespace WzDataExtractor
                     canvasFiles[category] = new List<WzFile>();
                 }
                 canvasFiles[category].Add(canvasWzFile);
-                Console.WriteLine($"Successfully added canvas file for {category}");
+                /*Console.WriteLine($"Successfully added canvas file for {category}");*/
                 //PrintWzFileContents(canvasWzFile);
             }
             else
             {
-                Console.WriteLine($"Canvas file not found: {filePath}");
+                /*Console.WriteLine($"Canvas file not found: {filePath}");*/
             }
         }
 
@@ -267,17 +267,13 @@ namespace WzDataExtractor
             xmlWriter.WriteStartElement("canvas");
             xmlWriter.WriteAttributeString("name", canvasProp.Name);
 
-            Console.WriteLine($"Processing canvas: {canvasProp.Name}");
-            Console.WriteLine($"Current category: {category}");
+            /*Console.WriteLine($"Processing canvas: {canvasProp.Name}");*/
+            /*Console.WriteLine($"Current category: {category}");*/
 
             string fileName = CleanFileName(canvasProp.ParentImage.Name);
             string result = fileName;
-            if (fileName == "01041001.img")
-            {
-                Console.WriteLine("----------------------------------------------------");
-            }
 
-            Console.WriteLine($"File name: {fileName}");
+            /*Console.WriteLine($"File name: {fileName}");*/
             string canvasCategoryOutputPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), category);
             string canvasOutputPath = Path.Combine(canvasCategoryOutputPath, "_Canvas");
             string pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
@@ -286,17 +282,17 @@ namespace WzDataExtractor
             WzStringProperty linkProp = (WzStringProperty)canvasProp["_outlink"] ?? (WzStringProperty)canvasProp["_inlink"];
 
             if (linkProp != null) {
-                Console.WriteLine($"--------linkprop value ---------{linkProp.Value}");
-                Console.WriteLine($"---canvas parent--------{canvasProp.GetTopMostWzDirectory().Name}");
+                /*Console.WriteLine($"--------linkprop value ---------{linkProp.Value}");*/
+                /*Console.WriteLine($"---canvas parent--------{canvasProp.GetTopMostWzDirectory().Name}");*/
                 WzImageProperty linkedProp = linkProp.GetLinkedWzImageProperty();
                 if (linkedProp != null) {
-                    Console.WriteLine($"----asdasd----linkedprop value ---------{linkedProp.WzValue}");
+                    /*Console.WriteLine($"----asdasd----linkedprop value ---------{linkedProp.WzValue}");*/
                     string linkPropString = linkedProp.WzValue.ToString();
                     string[] parts = linkPropString.Split('/');
                     result = parts.FirstOrDefault(part => part.EndsWith(".img"));
                     pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
                     pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
-                    Console.WriteLine($"Link prop string: {result}");
+                    /*Console.WriteLine($"Link prop string: {result}");*/
                     
                 }
 
@@ -315,7 +311,7 @@ namespace WzDataExtractor
             WzImage canvasImage = canvasManager.GetCanvasImage(category, result);
             if (canvasImage != null)
             {
-                Console.WriteLine($"Found canvas image: {canvasImage.FullPath}");
+                /*Console.WriteLine($"Found canvas image: {canvasImage.FullPath}");*/
 
                 WzCanvasProperty canvasProperty = FindCanvasProperty(canvasImage, canvasProp.Name);
                 if (canvasProperty != null)
@@ -328,30 +324,30 @@ namespace WzDataExtractor
                             {
                                 Directory.CreateDirectory(Path.GetDirectoryName(pngFullPath));
                                 bmp.Save(pngFullPath, System.Drawing.Imaging.ImageFormat.Png);
-                                Console.WriteLine($"Saved image to: {pngFullPath}");
+                                /*Console.WriteLine($"Saved image to: {pngFullPath}");*/
                                 xmlWriter.WriteAttributeString("width", bmp.Width.ToString());
                                 xmlWriter.WriteAttributeString("height", bmp.Height.ToString());
                                 xmlWriter.WriteAttributeString("png", pngRelativePath);
                             }
                             else
                             {
-                                Console.WriteLine("Failed to get bitmap from PNG property.");
+                                /*Console.WriteLine("Failed to get bitmap from PNG property.");*/
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error saving image: {ex.Message}");
+                        /*Console.WriteLine($"Error saving image: {ex.Message}");*/
                     }
                 }
                 else
                 {
-                    Console.WriteLine($"Canvas property '{canvasProp.Name}' not found in the canvas image.");
+                    /*Console.WriteLine($"Canvas property '{canvasProp.Name}' not found in the canvas image.");*/
                 }
             }
             else
             {
-                Console.WriteLine($"Canvas image not found for category: {category}, file: {fileName}");
+                /*Console.WriteLine($"Canvas image not found for category: {category}, file: {fileName}");*/
             }
 
             foreach (WzImageProperty subProp in canvasProp.WzProperties)
@@ -467,11 +463,12 @@ namespace WzDataExtractor
     {
         static void Main(string[] args)
         {
-            string etcWzPath = @"WzFiles\Etc\Etc_000.wz";
-            string characterWzPath = @"WzFiles\Character\Character_000.wz";
+            string maplePath = @"C:\Program Files (x86)\Steam\steamapps\common\MapleStory\Data";
+            string etcWzPath = Path.Combine(maplePath, "Etc", "Etc_000.wz");
+            string characterWzPath = Path.Combine(maplePath, "Character", "Character_000.wz");
             //string accessoryWzPath = @"WzFiles\Character\Accessory\Accessory_000.wz";
-            string stringWzPath = @"WzFiles\String\String_000.wz";
-            string itemWzPath = @"WzFiles\Item\Item_000.wz";
+            string stringWzPath = Path.Combine(maplePath, "String", "String_000.wz");
+            string itemWzPath = Path.Combine(maplePath, "Item", "Item_000.wz");
             
             WzFile etcWz = new WzFile(etcWzPath, WzMapleVersion.CLASSIC);
             WzFile characterWz = new WzFile(characterWzPath, WzMapleVersion.CLASSIC);
@@ -499,15 +496,15 @@ namespace WzDataExtractor
 
                 if (parseStatus == WzFileParseStatus.Success)
                 {
-                    Console.WriteLine("Successfully parsed Etc.wz");
+                    /*Console.WriteLine("Successfully parsed Etc.wz");*/
                     PrintWzStructure(etcWz.WzDirectory, 0);
 
                     //List<int> itemIds = ExtractCommodityData(etcWz);
                     var itemData = ExtractItemData(etcWz, stringWz, itemWz);
                     var itemIds = itemData.Select(item => item.ItemId).Distinct().ToList();
 
-                    outputPath = "output/CharacterItems";
-                    string characterPath = @"WzFiles\Character";
+                    outputPath = @"C:\Users\Mason\Documents\coding_projects\maple-cs-parser\CharacterItems";
+                    string characterPath = Path.Combine(maplePath, "Character");
 
                     string itemOutputPath = "output/Item";
                     string itemPath = @"WzFiles\Item";
