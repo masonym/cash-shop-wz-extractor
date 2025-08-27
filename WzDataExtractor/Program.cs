@@ -213,7 +213,9 @@ namespace WzDataExtractor
         private static void DumpItemData(WzImage itemImg, int itemId, string outputPath, string category, CanvasManager canvasManager)
         {
             string itemFolder = Path.Combine(outputPath, $"{itemId:D8}.img");
-            Directory.CreateDirectory(itemFolder);
+
+            // Ensure the category directory exists for XML output
+            Directory.CreateDirectory(outputPath);
 
             string xmlPath = Path.Combine(outputPath, $"{itemId:D8}.img.xml");
             using (StreamWriter sw = new StreamWriter(xmlPath))
@@ -274,10 +276,11 @@ namespace WzDataExtractor
             string result = fileName;
 
             /*Console.WriteLine($"File name: {fileName}");*/
-            string canvasCategoryOutputPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), category);
+            string characterRoot = Path.GetDirectoryName(outputPath);
+            string canvasCategoryOutputPath = Path.Combine(characterRoot, category);
             string canvasOutputPath = Path.Combine(canvasCategoryOutputPath, "_Canvas");
             string pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
-            string pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
+            string pngFullPath = Path.Combine(characterRoot, pngRelativePath);
 
             WzStringProperty linkProp = (WzStringProperty)canvasProp["_outlink"] ?? (WzStringProperty)canvasProp["_inlink"];
 
@@ -291,7 +294,7 @@ namespace WzDataExtractor
                     string[] parts = linkPropString.Split('/');
                     result = parts.FirstOrDefault(part => part.EndsWith(".img"));
                     pngRelativePath = Path.Combine(category, "_Canvas", result, currentPath, canvasProp.Name + ".png");
-                    pngFullPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(outputPath)), pngRelativePath);
+                    pngFullPath = Path.Combine(characterRoot, pngRelativePath);
                     /*Console.WriteLine($"Link prop string: {result}");*/
                     
                 }
