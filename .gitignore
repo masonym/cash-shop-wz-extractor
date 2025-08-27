@@ -134,3 +134,8 @@ _NCrunch*
 
 #VS
 .vs/
+.vscode/
+
+*.json
+*.txt
+lib/xt-MapleLib.dll
