@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -459,6 +459,371 @@ namespace WzDataExtractor
         }
     }
 
+    public static class ItemWzDumper
+    {
+        public static void DumpItemWzData(string maplePath, List<int> itemIds, string itemDumpRoot)
+        {
+            string itemRoot = Path.Combine(maplePath, "Item");
+            string[] subs = new[] { "Pet", "Cash", "Special" };
+
+            foreach (string sub in subs)
+            {
+                string subPath = Path.Combine(itemRoot, sub);
+                if (!Directory.Exists(subPath))
+                {
+                    Console.WriteLine($"Item subdirectory not found: {subPath}");
+                    continue;
+                }
+
+                var canvasManager = new CanvasManager();
+                string canvasPath = Path.Combine(subPath, "_Canvas");
+                if (Directory.Exists(canvasPath))
+                {
+                    foreach (var canvasWz in Directory.GetFiles(canvasPath, "*.wz"))
+                    {
+                        canvasManager.AddCanvasFile(sub, canvasWz);
+                    }
+                }
+
+                foreach (var wzPath in Directory.GetFiles(subPath, "*.wz"))
+                {
+                    using var wz = new WzFile(wzPath, WzMapleVersion.CLASSIC);
+                    var status = wz.ParseWzFile();
+                    if (status != WzFileParseStatus.Success)
+                    {
+                        Console.WriteLine($"Failed to parse {wzPath}: {status}");
+                        continue;
+                    }
+
+                    foreach (int itemId in itemIds)
+                    {
+                        if (!BelongsToSub(itemId, sub)) continue;
+
+                        try
+                        {
+                            switch (sub)
+                            {
+                                case "Pet":
+                                    DumpPet(wz.WzDirectory, itemId, itemDumpRoot, canvasManager);
+                                    break;
+                                case "Cash":
+                                    DumpCash(wz.WzDirectory, itemId, itemDumpRoot, canvasManager);
+                                    break;
+                                case "Special":
+                                    DumpSpecial(wz.WzDirectory, itemId, itemDumpRoot, canvasManager);
+                                    break;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"ItemWzDumper: Failed processing {itemId} in {sub}: {ex.Message}");
+                        }
+                    }
+                }
+            }
+        }
+
+        private static bool BelongsToSub(int itemId, string sub)
+        {
+            string idStr = itemId.ToString();
+            int prefix = idStr.Length >= 3 ? int.Parse(idStr.Substring(0, 3)) : 0;
+            if (sub == "Pet") return idStr.StartsWith("500");
+            if (sub == "Cash") return prefix >= 500 && prefix < 600;
+            if (sub == "Special") return prefix >= 900;
+            return false;
+        }
+
+        private static void DumpPet(WzDirectory dir, int itemId, string dumpRoot, CanvasManager cm)
+        {
+            string imgName1 = $"{itemId}.img";
+            string imgName2 = $"{itemId:D8}.img";
+            WzImage img = FindImageByNames(dir, new[] { imgName1, imgName2 });
+            if (img == null) return;
+            img.ParseImage();
+
+            // XML for Pet life value, etc.
+            string petBase = Path.Combine(dumpRoot, "Pet");
+            Directory.CreateDirectory(petBase);
+            Program.DumpWzImageToXml(img, Path.Combine(petBase, $"{itemId}.img.xml"));
+
+            // Icons under Pet/{itemId}.img/info
+            var info = img["info"] as WzSubProperty;
+            if (info == null) return;
+            string infoDir = Path.Combine(petBase, $"{itemId}.img", "info");
+            Directory.CreateDirectory(infoDir);
+
+            SaveIconIfPresent(info, "iconRaw", Path.Combine(infoDir, "iconRaw.png"), "Pet", cm);
+            SaveIconIfPresent(info, "icon", Path.Combine(infoDir, "icon.png"), "Pet", cm);
+        }
+
+        private static void DumpCash(WzDirectory dir, int itemId, string dumpRoot, CanvasManager cm)
+        {
+            string idStr = itemId.ToString();
+            string prefix3 = idStr.Length >= 3 ? idStr.Substring(0, 3) : idStr;
+            string group = $"0{prefix3}";
+
+            // Image could be named with or without leading zero
+            WzImage img = FindImageByNames(dir, new[] { $"{group}.img", $"{prefix3}.img" });
+            if (img == null) return;
+            img.ParseImage();
+
+            // Node may be named 0{itemId} or itemId
+            var node = img[$"0{idStr}"] as WzSubProperty ?? img[idStr] as WzSubProperty;
+            if (node == null) return;
+            var info = node["info"] as WzSubProperty;
+            if (info == null) return;
+
+            string infoDir = Path.Combine(dumpRoot, "Cash", $"{group}.img", $"0{idStr}", "info");
+            Directory.CreateDirectory(infoDir);
+
+            SaveIconIfPresent(info, "iconRaw", Path.Combine(infoDir, "iconRaw.png"), "Cash", cm);
+            SaveIconIfPresent(info, "icon", Path.Combine(infoDir, "icon.png"), "Cash", cm);
+        }
+
+        private static void DumpSpecial(WzDirectory dir, int itemId, string dumpRoot, CanvasManager cm)
+        {
+            string idStr = itemId.ToString();
+            string prefix3 = idStr.Length >= 3 ? idStr.Substring(0, 3) : idStr;
+            string group = $"0{prefix3}";
+
+            WzImage img = FindImageByNames(dir, new[] { $"{group}.img", $"{prefix3}.img" });
+            if (img == null) return;
+            img.ParseImage();
+
+            var node = img[idStr] as WzSubProperty ?? img[$"0{idStr}"] as WzSubProperty;
+            if (node == null) return;
+
+            // Special expects icons at .../{itemId}/icon*.png (no info folder in Python fallback)
+            string baseDir = Path.Combine(dumpRoot, "Special", $"{group}.img", idStr);
+            Directory.CreateDirectory(baseDir);
+
+            // Try at current level
+            SaveIconIfPresent(node, "iconRaw", Path.Combine(baseDir, "iconRaw.png"), "Special", cm);
+            SaveIconIfPresent(node, "icon", Path.Combine(baseDir, "icon.png"), "Special", cm);
+
+            // If not present, try inside optional info
+            var info = node["info"] as WzSubProperty;
+            if (info != null)
+            {
+                SaveIconIfPresent(info, "iconRaw", Path.Combine(baseDir, "iconRaw.png"), "Special", cm);
+                SaveIconIfPresent(info, "icon", Path.Combine(baseDir, "icon.png"), "Special", cm);
+            }
+        }
+
+        private static WzImage FindImageByNames(WzDirectory dir, IEnumerable<string> names)
+        {
+            foreach (var name in names)
+            {
+                var img = dir.GetImageByName(name);
+                if (img != null) return img;
+            }
+            foreach (WzDirectory sub in dir.WzDirectories)
+            {
+                var found = FindImageByNames(sub, names);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static void SaveIconIfPresent(WzSubProperty container, string iconName, string pngPath, string category, CanvasManager cm)
+        {
+            var canvas = ResolveCanvas(container, iconName);
+            if (canvas != null)
+            {
+                TrySaveCanvas(canvas, pngPath, category, cm);
+                return;
+            }
+
+            // Fallback: search recursively for a canvas named iconName
+            var found = FindCanvasInSubtree(container, iconName);
+            if (found != null)
+            {
+                TrySaveCanvas(found, pngPath, category, cm);
+            }
+        }
+
+        private static WzCanvasProperty ResolveCanvas(WzSubProperty container, string name)
+        {
+            var prop = container[name];
+            if (prop is WzCanvasProperty c) return c;
+            if (prop is WzUOLProperty uol)
+            {
+                try
+                {
+                    var linked = uol.LinkValue;
+                    if (linked is WzCanvasProperty c2) return c2;
+                    if (linked is WzSubProperty sub && sub[name] is WzCanvasProperty c3) return c3;
+                }
+                catch { }
+            }
+            if (prop is WzSubProperty subProp && subProp[name] is WzCanvasProperty c4)
+            {
+                return c4;
+            }
+            return null;
+        }
+
+        private static WzCanvasProperty FindCanvasInSubtree(WzSubProperty container, string targetName)
+        {
+            foreach (var child in container.WzProperties)
+            {
+                if (child is WzCanvasProperty canv && canv.Name == targetName)
+                    return canv;
+                if (child is WzSubProperty sub)
+                {
+                    var got = FindCanvasInSubtree(sub, targetName);
+                    if (got != null) return got;
+                }
+                if (child is WzUOLProperty uol)
+                {
+                    try
+                    {
+                        var linked = uol.LinkValue;
+                        if (linked is WzCanvasProperty canv2 && canv2.Name == targetName)
+                            return canv2;
+                        if (linked is WzSubProperty sub2)
+                        {
+                            var got2 = FindCanvasInSubtree(sub2, targetName);
+                            if (got2 != null) return got2;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            return null;
+        }
+
+        private static void TrySaveCanvas(WzCanvasProperty canvasProp, string pngPath, string category, CanvasManager cm)
+        {
+            try
+            {
+                WzStringProperty linkProp = (WzStringProperty)canvasProp["_outlink"] ?? (WzStringProperty)canvasProp["_inlink"];
+                WzCanvasProperty finalCanvas = canvasProp;
+
+                if (linkProp != null)
+                {
+                    var linked = linkProp.GetLinkedWzImageProperty();
+                    if (linked is WzCanvasProperty linkedCanvas)
+                    {
+                        finalCanvas = linkedCanvas;
+                    }
+                    else
+                    {
+                        string linkStr = linked?.WzValue?.ToString() ?? linkProp.Value;
+                        if (!string.IsNullOrEmpty(linkStr))
+                        {
+                            // Follow the full path: locate the .img segment, then traverse inside that image by the remaining segments
+                            string[] parts = linkStr.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                            int imgIdx = Array.FindIndex(parts, p => p.EndsWith(".img", StringComparison.OrdinalIgnoreCase));
+                            if (imgIdx >= 0)
+                            {
+                                string imgName = parts[imgIdx];
+                                var canvasImage = cm.GetCanvasImage(category, imgName);
+                                if (canvasImage != null)
+                                {
+                                    canvasImage.ParseImage();
+                                    string[] innerPath = parts.Skip(imgIdx + 1).ToArray();
+                                    var targetProp = FindPropertyByPath(canvasImage, innerPath);
+                                    if (targetProp is WzCanvasProperty targetCanvas)
+                                    {
+                                        finalCanvas = targetCanvas;
+                                    }
+                                    else if (targetProp is WzSubProperty maybeInfo)
+                                    {
+                                        // Common case: link points to a folder; try to grab child canvas by the same name
+                                        if (maybeInfo[canvasProp.Name] is WzCanvasProperty childCanvas)
+                                        {
+                                            finalCanvas = childCanvas;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                using (var bmp = finalCanvas.PngProperty.GetImage(false))
+                {
+                    if (bmp == null) return;
+                    Directory.CreateDirectory(Path.GetDirectoryName(pngPath));
+                    bmp.Save(pngPath, System.Drawing.Imaging.ImageFormat.Png);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed saving canvas to {pngPath}: {ex.Message}");
+            }
+        }
+
+        private static WzImageProperty FindPropertyByPath(WzImage image, IEnumerable<string> segments)
+        {
+            if (image == null) return null;
+            IEnumerable<WzImageProperty> currentList = image.WzProperties;
+            WzImageProperty current = null;
+            foreach (var raw in segments)
+            {
+                var seg = raw?.Trim();
+                if (string.IsNullOrEmpty(seg)) continue;
+                if (currentList == null) return null;
+                current = currentList.FirstOrDefault(p => p.Name == seg);
+                if (current == null) return null;
+                if (current is WzSubProperty sub)
+                {
+                    currentList = sub.WzProperties;
+                }
+                else if (current is WzCanvasProperty canv)
+                {
+                    currentList = canv.WzProperties; // allow continuing into canvas children if needed
+                }
+                else
+                {
+                    currentList = null; // unsupported type for further traversal
+                }
+            }
+            return current;
+        }
+
+        private static WzCanvasProperty FindCanvasProperty(WzImage image, string propertyName)
+        {
+            foreach (WzImageProperty prop in image.WzProperties)
+            {
+                if (prop is WzCanvasProperty canvasProp && canvasProp.Name == propertyName)
+                {
+                    return canvasProp;
+                }
+                else if (prop is WzSubProperty subProp)
+                {
+                    WzCanvasProperty result = FindCanvasPropertyInSubProperty(subProp, propertyName);
+                    if (result != null)
+                    {
+                        return result;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private static WzCanvasProperty FindCanvasPropertyInSubProperty(WzSubProperty subProp, string propertyName)
+        {
+            foreach (WzImageProperty prop in subProp.WzProperties)
+            {
+                if (prop is WzCanvasProperty canvasProp && canvasProp.Name == propertyName)
+                {
+                    return canvasProp;
+                }
+                else if (prop is WzSubProperty nestedSubProp)
+                {
+                    WzCanvasProperty result = FindCanvasPropertyInSubProperty(nestedSubProp, propertyName);
+                    if (result != null)
+                    {
+                        return result;
+                    }
+                }
+            }
+            return null;
+        }
+    }
+
     class Program
     {
         static void Main(string[] args)
@@ -497,11 +862,62 @@ namespace WzDataExtractor
                 if (parseStatus == WzFileParseStatus.Success)
                 {
                     /*Console.WriteLine("Successfully parsed Etc.wz");*/
-                    PrintWzStructure(etcWz.WzDirectory, 0);
+                    PrintWzStructure(itemWz.WzDirectory, 0);
 
                     //List<int> itemIds = ExtractCommodityData(etcWz);
                     var itemData = ExtractItemData(etcWz, stringWz, itemWz);
                     var itemIds = itemData.Select(item => item.ItemId).Distinct().ToList();
+
+                    // Easy wins: dump required XMLs into maple-cs-parser\dumped_wz structure
+                    string dumpBase = @"C:\Users\Mason\Documents\coding_projects\maple-cs-parser\dumped_wz";
+                    string etcDump = Path.Combine(dumpBase, "Etc.wz");
+                    string stringDump = Path.Combine(dumpBase, "String.wz");
+                    string itemDump = Path.Combine(dumpBase, "Item.wz");
+
+                    // Etc.wz: Commodity, CashPackage
+                    DumpWzImageToXml(etcWz.WzDirectory["Commodity.img"] as WzImage, Path.Combine(etcDump, "Commodity.img.xml"));
+                    DumpWzImageToXml(etcWz.WzDirectory["CashPackage.img"] as WzImage, Path.Combine(etcDump, "CashPackage.img.xml"));
+
+                    // String.wz: Cash, Eqp, Pet
+                    DumpWzImageToXml(stringWz.WzDirectory["Cash.img"] as WzImage, Path.Combine(stringDump, "Cash.img.xml"));
+                    DumpWzImageToXml(stringWz.WzDirectory["Eqp.img"] as WzImage, Path.Combine(stringDump, "Eqp.img.xml"));
+                    DumpWzImageToXml(stringWz.WzDirectory["Pet.img"] as WzImage, Path.Combine(stringDump, "Pet.img.xml"));
+
+                    // Item.wz: Special/0910.img (located in Item\Special\Special*.wz in the install)
+                    try
+                    {
+                        string specialDir = Path.Combine(maplePath, "Item", "Special");
+                        if (Directory.Exists(specialDir))
+                        {
+                            string[] specialWzFiles = Directory.GetFiles(specialDir, "Special*.wz");
+                            string? specialWzPath = specialWzFiles.OrderBy(p => p).FirstOrDefault();
+                            if (!string.IsNullOrEmpty(specialWzPath))
+                            {
+                                using (var specialWz = new WzFile(specialWzPath, WzMapleVersion.CLASSIC))
+                                {
+                                    specialWz.ParseWzFile();
+                                    var special0910Img = specialWz.WzDirectory["0910.img"] as WzImage
+                                                         ?? specialWz.GetObjectFromPath("0910.img") as WzImage;
+                                    DumpWzImageToXml(special0910Img, Path.Combine(itemDump, "Special", "0910.img.xml"));
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine($"No Special*.wz found under {specialDir}");
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Special directory not found: {specialDir}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed dumping Special/0910.img: {ex.Message}");
+                    }
+
+                    // Item.wz targeted dump (Pet/Cash/Special) for only relevant itemIds, using CanvasManager like Character dump
+                    ItemWzDumper.DumpItemWzData(maplePath, itemIds, itemDump);
 
                     outputPath = @"C:\Users\Mason\Documents\coding_projects\maple-cs-parser\CharacterItems";
                     string characterPath = Path.Combine(maplePath, "Character");
@@ -546,6 +962,159 @@ namespace WzDataExtractor
 
             Console.WriteLine("\nPress any key to exit...");
             Console.ReadKey();
+        }
+
+        // Simple WZ -> XML dumper (no image extraction)
+        public static void DumpWzImageToXml(WzImage? image, string xmlPath)
+        {
+            try
+            {
+                if (image == null)
+                {
+                    Console.WriteLine($"Skip dump: image is null for {xmlPath}");
+                    return;
+                }
+
+                image.ParseImage();
+                string? dir = Path.GetDirectoryName(xmlPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                var settings = new XmlWriterSettings
+                {
+                    Indent = true,
+                    IndentChars = "    ",
+                    Encoding = System.Text.Encoding.UTF8
+                };
+
+                using (var sw = new StreamWriter(xmlPath))
+                using (var xw = XmlWriter.Create(sw, settings))
+                {
+                    xw.WriteStartDocument();
+                    xw.WriteStartElement("imgdir");
+                    xw.WriteAttributeString("name", image.Name);
+
+                    foreach (WzImageProperty prop in image.WzProperties)
+                    {
+                        DumpPropertyForXml(xw, prop);
+                    }
+
+                    xw.WriteEndElement();
+                    xw.WriteEndDocument();
+                }
+
+                Console.WriteLine($"Dumped XML: {xmlPath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed dumping XML for {image?.Name}: {ex.Message}");
+            }
+        }
+
+        static void DumpPropertyForXml(XmlWriter xmlWriter, WzImageProperty prop)
+        {
+            switch (prop.PropertyType)
+            {
+                case WzPropertyType.Canvas:
+                    DumpCanvasPropertyForXml(xmlWriter, (WzCanvasProperty)prop);
+                    break;
+                case WzPropertyType.Vector:
+                    DumpVectorPropertyForXml(xmlWriter, (WzVectorProperty)prop);
+                    break;
+                case WzPropertyType.Convex:
+                    DumpConvexPropertyForXml(xmlWriter, (WzConvexProperty)prop);
+                    break;
+                case WzPropertyType.SubProperty:
+                    DumpSubPropertyForXml(xmlWriter, (WzSubProperty)prop);
+                    break;
+                case WzPropertyType.Sound:
+                    // Skip binary dump, just note
+                    xmlWriter.WriteStartElement("sound");
+                    xmlWriter.WriteAttributeString("name", prop.Name);
+                    xmlWriter.WriteEndElement();
+                    break;
+                case WzPropertyType.UOL:
+                    DumpUOLPropertyForXml(xmlWriter, (WzUOLProperty)prop);
+                    break;
+                default:
+                    DumpSimplePropertyForXml(xmlWriter, prop);
+                    break;
+            }
+        }
+
+        static void DumpCanvasPropertyForXml(XmlWriter xmlWriter, WzCanvasProperty canvasProp)
+        {
+            xmlWriter.WriteStartElement("canvas");
+            xmlWriter.WriteAttributeString("name", canvasProp.Name);
+
+            try
+            {
+                using (Bitmap? bmp = canvasProp.PngProperty?.GetImage(false))
+                {
+                    if (bmp != null)
+                    {
+                        xmlWriter.WriteAttributeString("width", bmp.Width.ToString());
+                        xmlWriter.WriteAttributeString("height", bmp.Height.ToString());
+                    }
+                }
+            }
+            catch { /* ignore image decode errors for simple dump */ }
+
+            foreach (WzImageProperty subProp in canvasProp.WzProperties)
+            {
+                DumpPropertyForXml(xmlWriter, subProp);
+            }
+
+            xmlWriter.WriteEndElement();
+        }
+
+        static void DumpVectorPropertyForXml(XmlWriter xmlWriter, WzVectorProperty vectorProp)
+        {
+            xmlWriter.WriteStartElement("vector");
+            xmlWriter.WriteAttributeString("name", vectorProp.Name);
+            xmlWriter.WriteAttributeString("x", vectorProp.X.Value.ToString());
+            xmlWriter.WriteAttributeString("y", vectorProp.Y.Value.ToString());
+            xmlWriter.WriteEndElement();
+        }
+
+        static void DumpConvexPropertyForXml(XmlWriter xmlWriter, WzConvexProperty convexProp)
+        {
+            xmlWriter.WriteStartElement("extended");
+            xmlWriter.WriteAttributeString("name", convexProp.Name);
+            foreach (WzImageProperty subProp in convexProp.WzProperties)
+            {
+                DumpPropertyForXml(xmlWriter, subProp);
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        static void DumpSubPropertyForXml(XmlWriter xmlWriter, WzSubProperty subProp)
+        {
+            xmlWriter.WriteStartElement("imgdir");
+            xmlWriter.WriteAttributeString("name", subProp.Name);
+            foreach (WzImageProperty childProp in subProp.WzProperties)
+            {
+                DumpPropertyForXml(xmlWriter, childProp);
+            }
+            xmlWriter.WriteEndElement();
+        }
+
+        static void DumpUOLPropertyForXml(XmlWriter xmlWriter, WzUOLProperty uolProp)
+        {
+            xmlWriter.WriteStartElement("uol");
+            xmlWriter.WriteAttributeString("name", uolProp.Name);
+            xmlWriter.WriteAttributeString("value", uolProp.Value);
+            xmlWriter.WriteEndElement();
+        }
+
+        static void DumpSimplePropertyForXml(XmlWriter xmlWriter, WzImageProperty prop)
+        {
+            xmlWriter.WriteStartElement(prop.PropertyType.ToString().ToLower());
+            xmlWriter.WriteAttributeString("name", prop.Name);
+            xmlWriter.WriteAttributeString("value", prop.ToString());
+            xmlWriter.WriteEndElement();
         }
         static void ExtractItemDirectory(string itemDirPath, string outputPath, WzMapleVersion version)
         {
@@ -625,6 +1194,8 @@ namespace WzDataExtractor
                 wzFile?.Dispose();
             }
         }
+
+        
 
 
         public static void PrintWzStructure(WzObject wzObject, int depth)

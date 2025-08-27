@@ -25,4 +25,3 @@ I would like the workflow to be:
 
 1. I think we can just dump Commodity.img and CashPackage.img to XML easily
 2. We can just dump Special/0910.img to XML easily
-3. Just save CharacterItems to /maple-cs-parser/
