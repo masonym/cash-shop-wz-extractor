@@ -5,6 +5,8 @@ VisualStudioVersion = 17.10.35013.160
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WzDataExtractor", "WzDataExtractor\WzDataExtractor.csproj", "{5DD54DDC-CE5E-42D8-9FFA-74DAC2602DEA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DamageSkinExtractor", "DamageSkinExtractor\DamageSkinExtractor.csproj", "{33BAF9A5-9B58-42C2-B44F-DC85ED9A2B0D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -15,6 +17,10 @@ Global
 		{5DD54DDC-CE5E-42D8-9FFA-74DAC2602DEA}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5DD54DDC-CE5E-42D8-9FFA-74DAC2602DEA}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5DD54DDC-CE5E-42D8-9FFA-74DAC2602DEA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{33BAF9A5-9B58-42C2-B44F-DC85ED9A2B0D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{33BAF9A5-9B58-42C2-B44F-DC85ED9A2B0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{33BAF9A5-9B58-42C2-B44F-DC85ED9A2B0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{33BAF9A5-9B58-42C2-B44F-DC85ED9A2B0D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

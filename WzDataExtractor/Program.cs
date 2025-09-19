@@ -827,6 +827,8 @@ namespace WzDataExtractor
         }
     }
 
+    
+
     class Program
     {
         static void Main(string[] args)
@@ -921,6 +923,8 @@ namespace WzDataExtractor
 
                     // Item.wz targeted dump (Pet/Cash/Special) for only relevant itemIds, using CanvasManager like Character dump
                     ItemWzDumper.DumpItemWzData(maplePath, itemIds, itemDump);
+
+                    
 
                     outputPath = @"C:\Users\Mason\Documents\coding_projects\maple-cs-parser\CharacterItems";
                     string characterPath = Path.Combine(maplePath, "Character");
