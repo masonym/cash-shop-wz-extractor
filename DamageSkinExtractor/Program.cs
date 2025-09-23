@@ -125,6 +125,7 @@ namespace DamageSkinExtractor
                 }
 
                 string dsOut = Path.Combine(dumpBase, "Etc.wz", "_Canvas", "DamageSkin.img");
+                Console.WriteLine($"Exporting damage skin assets to {dsOut}");
                 DumpDamageSkinAssets(maplePath, explicitDamageSkinIds, dsOut);
                 Console.WriteLine($"Export complete. Output: {dsOut}");
                 return 0;
@@ -169,7 +170,7 @@ Options:
 
             string itemDir = Path.Combine(maplePath, "Item");
             var itemWzFiles = Directory.Exists(itemDir)
-                ? Directory.GetFiles(itemDir, "*.wz")
+                ? Directory.GetFiles(itemDir, "*.wz", SearchOption.AllDirectories)
                 : Array.Empty<string>();
             if (itemWzFiles.Length == 0)
             {
@@ -226,6 +227,7 @@ Options:
 
                 foreach (var itemId in candidateItemIds.Distinct())
                 {
+                    if (verbose) Console.WriteLine($"\nParsed: {parsed[0].WzDirectory.GetTopMostWzDirectory().Name}");
                     int? ds = TryGetDamageSkinIdFromItemCategories(parsed, itemId, verbose);
                     if (ds.HasValue && ds.Value > 0)
                     {
@@ -386,107 +388,155 @@ Options:
         }
 
 
+        // Use MapleLib's multi-file path helper across category WZ files to find group/direct images.
         private static int? TryGetDamageSkinIdFromItemCategories(IEnumerable<WzFile> itemWzFiles, int itemId, bool verbose)
         {
-            string idStr = itemId.ToString();
-            int prefix = itemId / 10000; // e.g., 2040001 -> 204
-            string prefixStr = prefix.ToString();
-            string[] categories = new[] { "Consume", "Special", "Cash" };
+            var files = itemWzFiles?.ToList() ?? new List<WzFile>();
+            if (files.Count == 0) return null;
 
-            foreach (var wz in itemWzFiles)
+            string idStr = itemId.ToString();
+            string prefixStr = (itemId / 10000).ToString(); // e.g., 2040001 -> 204
+            string[] categories = new[] { "Consume", "Special", "Cash" };
+            string[] groupNames = new[] { $"{prefixStr}.img", $"0{prefixStr}.img" };
+            string[] directNames = new[] { $"{idStr}.img", $"0{idStr}.img", $"{itemId:D8}.img" };
+
+            foreach (var category in categories)
             {
-                foreach (var category in categories)
+                string catRoot = $"{category}.wz"; // e.g., Consume.wz, Cash.wz, Special.wz
+                var catFiles = files.Where(f =>
+                        (!string.IsNullOrEmpty(f.FilePath) &&
+                         f.FilePath.IndexOf(Path.DirectorySeparatorChar + "Item" + Path.DirectorySeparatorChar + category + Path.DirectorySeparatorChar,
+                                            StringComparison.OrdinalIgnoreCase) >= 0)
+                        || f.Name.StartsWith(category, StringComparison.OrdinalIgnoreCase)
+                    ).ToList();
+                if (catFiles.Count == 0)
                 {
-                    // 2a) Group file <category>/<prefix>.img containing nodes <itemId>
-                    string[] groupCandidates = new[]
+                    if (verbose) Console.WriteLine($"      No parsed WZ file named {catRoot} loaded. Skipping category.");
+                    continue;
+                }
+
+                // 1) Group image search: <category>.wz/<prefix>.img
+                foreach (var gName in groupNames)
+                {
+                    var obj = WzFile.GetObjectFromMultipleWzFilePath($"{catRoot}/{gName}", catFiles);
+                    var groupImg = obj as WzImage;
+                    if (groupImg == null)
                     {
-                        $"{category}/{prefixStr}.img",
-                        $"{category}/0{prefixStr}.img",
-                        $"{category}/{prefixStr}",
-                        $"{category}/0{prefixStr}"
-                    };
-                    foreach (var groupPath in groupCandidates)
+                        if (verbose) Console.WriteLine($"      Group: {category}\\{gName} (missing)");
+                        continue;
+                    }
+
+                    if (verbose) Console.WriteLine($"      Group: {category}\\{gName}");
+                    try { groupImg.ParseImage(); } catch { }
+
+                    // Try direct lookup by exact/zero-padded key
+                    var node = groupImg[idStr] as WzSubProperty
+                               ?? groupImg[$"0{idStr}"] as WzSubProperty;
+
+                    // Fallback: scan children and match numeric name ignoring leading zeros
+                    if (node == null)
                     {
-                        var obj = wz.GetObjectFromPath(groupPath);
-                        if (obj is WzImage groupImg)
+                        WzSubProperty? match = null;
+                        foreach (var prop in groupImg.WzProperties)
                         {
-                            try { groupImg.ParseImage(); } catch { }
-                            if (verbose) Console.WriteLine($"      Search: {category} -> {Path.GetFileName(groupImg.Name)} in {groupPath}");
-                            var node = groupImg[idStr] as WzSubProperty
-                                       ?? groupImg[$"0{idStr}"] as WzSubProperty;
-                            if (node != null)
+                            if (prop is WzSubProperty sp)
                             {
-                                var info = node["info"] as WzSubProperty;
-                                var dsProp = info?["damageSkinID"]
-                                            ?? info?["damageSkin"]
-                                            ?? node["damageSkinID"]
-                                            ?? node["damageSkin"]
-                                            ?? FindPropertyByName(node, "damageSkinID")
-                                            ?? FindPropertyByName(node, "damageSkin");
-                                if (dsProp != null)
+                                string t = sp.Name.TrimStart('0');
+                                if (t.Length >= 7 && int.TryParse(t, out int nid) && nid == itemId)
                                 {
-                                    try { return dsProp.GetInt(); } catch { }
+                                    match = sp;
+                                    break;
                                 }
                             }
                         }
-                        else if (obj is WzDirectory groupDir)
+                        if (match != null)
                         {
-                            if (verbose) Console.WriteLine($"      Search directory: {category} -> {groupPath}");
-                            // Look for direct image names inside this directory
-                            string[] imgNames = new[]
-                            {
-                                $"{idStr}.img",
-                                $"0{idStr}.img",
-                                $"{itemId:D8}.img"
-                            };
-                            foreach (var name in imgNames)
-                            {
-                                var img = groupDir.GetImageByName(name);
-                                if (img == null) continue;
-                                try { img.ParseImage(); } catch { }
-                                var info = img["info"] as WzSubProperty;
-                                var dsProp = info?["damageSkinID"]
-                                            ?? info?["damageSkin"]
-                                            ?? img["damageSkinID"]
-                                            ?? img["damageSkin"]
-                                            ?? FindPropertyByName(img, "damageSkinID")
-                                            ?? FindPropertyByName(img, "damageSkin");
-                                if (dsProp != null)
-                                {
-                                    try { return dsProp.GetInt(); } catch { }
-                                }
-                            }
+                            node = match;
+                        }
+                        else if (verbose)
+                        {
+                            var preview = string.Join(", ", groupImg.WzProperties.Take(10).Select(p => $"{p.Name}:{p.GetType().Name}"));
+                            Console.WriteLine($"        No node match; child count={groupImg.WzProperties.Count}. Sample: {preview}");
                         }
                     }
-                    // 2b) Direct image paths inside <category>/
-                    string[] directNames = new[]
+
+                    if (node != null)
                     {
-                        $"{category}/{idStr}.img",
-                        $"{category}/0{idStr}.img",
-                        $"{category}/{itemId:D8}.img"
-                    };
-                    foreach (var path in directNames)
-                    {
-                        if (wz.GetObjectFromPath(path) is WzImage img)
+                        var info = node["info"] as WzSubProperty;
+                        var dsProp = info?["damageSkinID"]
+                                    ?? info?["damageSkin"]
+                                    ?? node["damageSkinID"]
+                                    ?? node["damageSkin"]
+                                    ?? FindPropertyByName(node, "damageSkinID")
+                                    ?? FindPropertyByName(node, "damageSkin");
+                        if (dsProp != null)
                         {
-                            if (verbose) Console.WriteLine($"      Search direct: {path}");
-                            try { img.ParseImage(); } catch { }
-                            var info = img["info"] as WzSubProperty;
-                            var dsProp = info?["damageSkinID"]
-                                        ?? info?["damageSkin"]
-                                        ?? img["damageSkinID"]
-                                        ?? img["damageSkin"]
-                                        ?? FindPropertyByName(img, "damageSkinID")
-                                        ?? FindPropertyByName(img, "damageSkin");
-                            if (dsProp != null)
+                            var v = TryGetIntValue(dsProp);
+                            if (v.HasValue) return v.Value;
+                            if (verbose)
                             {
-                                try { return dsProp.GetInt(); } catch { }
+                                Console.WriteLine($"        Found property '{dsProp.Name}' of type {dsProp.GetType().Name} but couldn't parse int.");
                             }
                         }
                     }
                 }
+
+                // 2) Direct image search: <category>.wz/<id>.img (various formats)
+                foreach (var fileName in directNames)
+                {
+                    var obj = WzFile.GetObjectFromMultipleWzFilePath($"{catRoot}/{fileName}", catFiles);
+                    var img = obj as WzImage;
+                    if (img == null)
+                    {
+                        if (verbose) Console.WriteLine($"      Search direct: {category}\\{fileName} (missing)");
+                        continue;
+                    }
+                    if (verbose) Console.WriteLine($"      Search direct: {category}\\{fileName}");
+                    try { img.ParseImage(); } catch { }
+                    var info = img["info"] as WzSubProperty;
+                    var dsProp = info?["damageSkinID"]
+                                ?? info?["damageSkin"]
+                                ?? img["damageSkinID"]
+                                ?? img["damageSkin"]
+                                ?? FindPropertyByName(img, "damageSkinID")
+                                ?? FindPropertyByName(img, "damageSkin");
+                    if (dsProp != null)
+                    {
+                        var v = TryGetIntValue(dsProp);
+                        if (v.HasValue) return v.Value;
+                        if (verbose)
+                        {
+                            Console.WriteLine($"        Found property '{dsProp.Name}' of type {dsProp.GetType().Name} but couldn't parse int.");
+                        }
+                    }
+                    else if (verbose)
+                    {
+                        var infoPreview = info == null
+                            ? "(no info node)"
+                            : string.Join(", ", info.WzProperties.Select(p => p.Name).Take(12));
+                        Console.WriteLine($"        No damageSkin property in info. info children: {infoPreview}");
+                    }
+                }
             }
-            if (verbose) Console.WriteLine($"      Not found in Consume for {itemId}");
+
+            if (verbose) Console.WriteLine($"      Not found for {itemId}");
+            return null;
+        }
+
+        private static int? TryGetIntValue(WzImageProperty? prop)
+        {
+            if (prop == null) return null;
+            try
+            {
+                return prop.GetInt();
+            }
+            catch { }
+
+            if (prop is WzStringProperty ws)
+            {
+                var s = ws.GetString();
+                if (int.TryParse(s, out var v)) return v;
+            }
             return null;
         }
 
@@ -538,48 +588,77 @@ Options:
                 Console.WriteLine($"No Etc/_Canvas/*.wz found under {etcCanvasDir}");
                 return;
             }
+            Console.WriteLine($"Found {etcWzFiles.Length} Etc/_Canvas/*.wz files");
 
             WzImage? damageSkinImg = null;
+            WzFile? damageSkinWzFile = null;
             foreach (var wzPath in etcWzFiles)
             {
-                using var wz = new WzFile(wzPath, WzMapleVersion.CLASSIC);
-                if (wz.ParseWzFile() != WzFileParseStatus.Success) continue;
+                var wz = new WzFile(wzPath, WzMapleVersion.CLASSIC);
+                if (wz.ParseWzFile() != WzFileParseStatus.Success)
+                {
+                    wz.Dispose();
+                    continue;
+                }
                 var img = wz.WzDirectory.GetImageByName("DamageSkin.img");
                 if (img != null)
                 {
+                    Console.WriteLine($"DamageSkin.img found in {wzPath}. Continuing...");
                     damageSkinImg = img;
+                    damageSkinWzFile = wz; // Keep the WZ file alive
                     break;
+                }
+                else
+                {
+                    Console.WriteLine($"DamageSkin.img not found in {wzPath}");
+                    wz.Dispose();
                 }
             }
 
-            if (damageSkinImg == null)
+            if (damageSkinImg == null || damageSkinWzFile == null)
             {
                 Console.WriteLine("DamageSkin.img not found under Etc/_Canvas");
                 return;
             }
 
-            damageSkinImg.ParseImage();
-            foreach (int id in damageSkinIds.Distinct())
+            try
             {
-                string idStr = id.ToString();
-                var node = damageSkinImg[idStr] as WzSubProperty;
-                if (node == null) continue;
+                Console.WriteLine($"Found DamageSkin.img {damageSkinImg}");
 
-                string baseDir = Path.Combine(outputRoot, idStr);
-                try
+                foreach (int id in damageSkinIds.Distinct())
                 {
-                    Directory.CreateDirectory(baseDir);
-                    SaveCanvasesRecursive(node, baseDir, "");
+                    string idStr = id.ToString();
+                    Console.WriteLine($"Processing DamageSkin {id} in {damageSkinImg}");
+                    var node = damageSkinImg[idStr] as WzSubProperty;
+                    if (node == null)
+                    {
+                        Console.WriteLine($"DamageSkin {id} not found");
+                        continue;
+                    }
+
+                    string baseDir = Path.Combine(outputRoot, idStr);
+                    Console.WriteLine($"Exporting DamageSkin {id} to {baseDir}");
+                    try
+                    {
+                        Directory.CreateDirectory(baseDir);
+                        SaveCanvasesRecursive(node, baseDir, "");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed exporting DamageSkin {id}: {ex.Message}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed exporting DamageSkin {id}: {ex.Message}");
-                }
+            }
+            finally
+            {
+                // Clean up the WZ file when done
+                damageSkinWzFile?.Dispose();
             }
         }
 
         private static void SaveCanvasesRecursive(WzImageProperty prop, string baseDir, string currentPath)
         {
+            Console.WriteLine($"Saving canvas {prop.FullPath}");
             if (prop is WzCanvasProperty canvas)
             {
                 try
