@@ -229,7 +229,7 @@ Options:
             var candidateItemIds = GetCandidateDamageSkinItemIdsFromStringWz(maplePath, verbose);
             if (candidateItemIds.Count == 0)
             {
-                if (verbose) Console.WriteLine("No candidate items found in String.wz/Consume.img");
+                if (verbose) Console.WriteLine("No candidate items found in String.wz/(Consume.img, Cash.img)");
                 return result;
             }
             else if (verbose)
@@ -350,8 +350,8 @@ Options:
             // 1) Build the basic item->damageSkin map
             var basicMap = BuildItemToDamageSkinMap(maplePath, verbose);
 
-            // 2) Read String.wz/Consume.img for name/desc
-            var nameDesc = ReadConsumeNameDescMap(maplePath, verbose);
+            // 2) Read String.wz/(Consume.img, Cash.img) for name/desc
+            var nameDesc = ReadItemNameDescMap(maplePath, verbose);
 
             // 3) Compose extended entries
             var extended = new Dictionary<int, DamageSkinItemInfo>();
@@ -374,7 +374,7 @@ Options:
             return extended;
         }
 
-        private static Dictionary<int, (string name, string desc)> ReadConsumeNameDescMap(string maplePath, bool verbose)
+        private static Dictionary<int, (string name, string desc)> ReadItemNameDescMap(string maplePath, bool verbose)
         {
             var result = new Dictionary<int, (string name, string desc)>();
 
@@ -430,7 +430,9 @@ Options:
                 {
                     foreach (var img in EnumerateAllImages(wz.WzDirectory))
                     {
-                        if (!img.Name.Equals("Consume.img", StringComparison.OrdinalIgnoreCase))
+                        // Pull names/descs from both Consume and Cash string tables
+                        if (!img.Name.Equals("Consume.img", StringComparison.OrdinalIgnoreCase)
+                            && !img.Name.Equals("Cash.img", StringComparison.OrdinalIgnoreCase))
                             continue;
 
                         try { img.ParseImage(); } catch { }
@@ -455,7 +457,7 @@ Options:
                 foreach (var wz in parsed) wz.Dispose();
             }
 
-            if (verbose) Console.WriteLine($"Read name/desc for {result.Count} items from String.wz/Consume.img");
+            if (verbose) Console.WriteLine($"Read name/desc for {result.Count} items from String.wz/(Consume.img, Cash.img)");
             return result;
         }
 
@@ -515,7 +517,8 @@ Options:
                 {
                     foreach (var img in EnumerateAllImages(wz.WzDirectory))
                     {
-                        if (!img.Name.Equals("Consume.img", StringComparison.OrdinalIgnoreCase))
+                        if (!img.Name.Equals("Consume.img", StringComparison.OrdinalIgnoreCase)
+                            && !img.Name.Equals("Cash.img", StringComparison.OrdinalIgnoreCase))
                             continue;
 
                         try { img.ParseImage(); } catch { }
@@ -545,7 +548,7 @@ Options:
                 foreach (var wz in parsed) wz.Dispose();
             }
 
-            if (verbose) Console.WriteLine($"Found {result.Count} candidate items in String.wz/Consume.img.");
+            if (verbose) Console.WriteLine($"Found {result.Count} candidate items in String.wz/(Consume.img, Cash.img).");
             return result;
         }
 
@@ -889,7 +892,7 @@ Options:
             return null;
         }
 
-        // ---- Icon extraction (Item/Consume) ----
+        // ---- Icon extraction (Item/Consume, Item/Cash, Item/Special) ----
 
         private static int DumpItemIcons(string maplePath,
                                          Dictionary<int, DamageSkinItemInfo> extendedMap,
@@ -905,33 +908,39 @@ Options:
                 return 0;
             }
 
-            // Load Item/Consume/*.wz and Item/Consume/_Canvas/*.wz
+            // Load Item/*/*.wz and Item/*/_Canvas/*.wz across relevant categories
             string consumeDir = Path.Combine(maplePath, "Item", "Consume");
-            if (!Directory.Exists(consumeDir))
+            string cashDir = Path.Combine(maplePath, "Item", "Cash");
+            string specialDir = Path.Combine(maplePath, "Item", "Special");
+
+            var consumeWzFiles = Directory.Exists(consumeDir) ? Directory.GetFiles(consumeDir, "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+            var cashWzFiles = Directory.Exists(cashDir) ? Directory.GetFiles(cashDir, "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+            var specialWzFiles = Directory.Exists(specialDir) ? Directory.GetFiles(specialDir, "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+
+            var consumeCanvasWzFiles = Directory.Exists(Path.Combine(consumeDir, "_Canvas")) ? Directory.GetFiles(Path.Combine(consumeDir, "_Canvas"), "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+            var cashCanvasWzFiles = Directory.Exists(Path.Combine(cashDir, "_Canvas")) ? Directory.GetFiles(Path.Combine(cashDir, "_Canvas"), "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+            var specialCanvasWzFiles = Directory.Exists(Path.Combine(specialDir, "_Canvas")) ? Directory.GetFiles(Path.Combine(specialDir, "_Canvas"), "*.wz", SearchOption.TopDirectoryOnly) : Array.Empty<string>();
+
+            if (consumeWzFiles.Length == 0 && cashWzFiles.Length == 0 && specialWzFiles.Length == 0)
             {
-                if (verbose) Console.WriteLine($"Consume directory not found: {consumeDir}");
+                if (verbose) Console.WriteLine($"No Item WZ files found in Item/Consume, Item/Cash, or Item/Special");
                 return 0;
             }
 
-            var consumeWzFiles = Directory.GetFiles(consumeDir, "*.wz", SearchOption.TopDirectoryOnly);
-            var consumeCanvasWzFiles = Directory.Exists(Path.Combine(consumeDir, "_Canvas"))
-                ? Directory.GetFiles(Path.Combine(consumeDir, "_Canvas"), "*.wz", SearchOption.TopDirectoryOnly)
-                : Array.Empty<string>();
-
-            var parsedConsume = new List<WzFile>();
+            var parsedItems = new List<WzFile>();
             var parsedCanvas = new List<WzFile>();
             try
             {
-                foreach (var p in consumeWzFiles)
+                foreach (var p in consumeWzFiles.Concat(cashWzFiles).Concat(specialWzFiles))
                 {
                     try
                     {
                         var wz = new WzFile(p, WzMapleVersion.CLASSIC);
-                        if (wz.ParseWzFile() == WzFileParseStatus.Success) parsedConsume.Add(wz); else wz.Dispose();
+                        if (wz.ParseWzFile() == WzFileParseStatus.Success) parsedItems.Add(wz); else wz.Dispose();
                     }
                     catch { }
                 }
-                foreach (var p in consumeCanvasWzFiles)
+                foreach (var p in consumeCanvasWzFiles.Concat(cashCanvasWzFiles).Concat(specialCanvasWzFiles))
                 {
                     try
                     {
@@ -952,22 +961,39 @@ Options:
                     string relIconPath = Path.Combine("Etc.wz", "_Canvas", "DamageSkin.img", dsId.ToString(), $"icon_{itemId}.png");
                     string fullIconPath = Path.Combine(dumpBaseDir.FullName, relIconPath);
 
-                    if (TrySaveItemIconFromConsume(parsedConsume, parsedCanvas, itemId, fullIconPath, verbose))
+                    if (TrySaveItemIconFromItems(parsedItems, parsedCanvas, itemId, fullIconPath, verbose))
                     {
                         kvp.Value.Icon = relIconPath.Replace('\\', '/');
                         saved++;
+                    }
+                    else if (File.Exists(fullIconPath))
+                    {
+                        // Icon already exists from a previous run; still update the mapping
+                        kvp.Value.Icon = relIconPath.Replace('\\', '/');
+                    }
+                    else
+                    {
+                        // Fallback: some DamageSkin entries have their own icon canvas exported by DumpDamageSkinAssets
+                        // e.g., <dumpBase>/Etc.wz/_Canvas/DamageSkin.img/<dsId>/icon.png
+                        string dsDir = Path.Combine(dumpBaseDir.FullName, "Etc.wz", "_Canvas", "DamageSkin.img", dsId.ToString());
+                        string dsIconFull = Path.Combine(dsDir, "icon.png");
+                        if (File.Exists(dsIconFull))
+                        {
+                            string dsIconRel = Path.Combine("Etc.wz", "_Canvas", "DamageSkin.img", dsId.ToString(), "icon.png").Replace('\\', '/');
+                            kvp.Value.Icon = dsIconRel;
+                        }
                     }
                 }
                 return saved;
             }
             finally
             {
-                foreach (var wz in parsedConsume) wz.Dispose();
+                foreach (var wz in parsedItems) wz.Dispose();
                 foreach (var wz in parsedCanvas) wz.Dispose();
             }
         }
 
-        private static bool TrySaveItemIconFromConsume(List<WzFile> consumeFiles, List<WzFile> canvasFiles, int itemId, string pngFullPath, bool verbose)
+        private static bool TrySaveItemIconFromItems(List<WzFile> itemFiles, List<WzFile> canvasFiles, int itemId, string pngFullPath, bool verbose)
         {
             string idStr = itemId.ToString();
             string prefixStr = (itemId / 10000).ToString();
@@ -975,7 +1001,7 @@ Options:
             string[] directNames = new[] { $"{idStr}.img", $"0{idStr}.img", $"{itemId:D8}.img" };
 
             // 1) Try direct images
-            foreach (var wz in consumeFiles)
+            foreach (var wz in itemFiles)
             {
                 var img = TryGetImageByNames(wz.WzDirectory, directNames);
                 if (img != null)
@@ -991,7 +1017,7 @@ Options:
             }
 
             // 2) Try group images and node lookup
-            foreach (var wz in consumeFiles)
+            foreach (var wz in itemFiles)
             {
                 foreach (var g in groupNames)
                 {
