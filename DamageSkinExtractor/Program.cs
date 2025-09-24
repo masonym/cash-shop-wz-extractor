@@ -11,7 +11,18 @@ namespace DamageSkinExtractor
 {
     internal static class Program
     {
-        private const string DefaultMaplePath = @"C:\Program Files (x86)\Steam\steamapps\common\MapleStory\Data";
+        private const string DefaultMaplePath = @"C:\\Program Files (x86)\\Steam\\steamapps\\common\\MapleStory\\Data";
+
+        // Extended map entry for JSON: includes name/desc and relative icon path
+        private class DamageSkinItemInfo
+        {
+            public int ItemId { get; set; }
+            public int DamageSkinId { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public string Desc { get; set; } = string.Empty;
+            // Relative to dump base, e.g. "Etc.wz/_Canvas/DamageSkin.img/1000/icon_2431965.png"
+            public string Icon { get; set; } = string.Empty;
+        }
 
         private static int Main(string[] args)
         {
@@ -85,12 +96,13 @@ namespace DamageSkinExtractor
             {
                 Directory.CreateDirectory(dumpBase);
                 string mapPath = Path.Combine(dumpBase, "DamageSkinItemMap.json");
+                Dictionary<int, DamageSkinItemInfo>? extendedMap = null;
 
                 if (!assetsOnly)
                 {
-                    var map = BuildItemToDamageSkinMap(maplePath, verbose);
-                    File.WriteAllText(mapPath, JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true }));
-                    Console.WriteLine($"Wrote mapping: {mapPath} ({map.Count} entries)");
+                    extendedMap = BuildItemToDamageSkinInfoMap(maplePath, verbose);
+                    File.WriteAllText(mapPath, JsonSerializer.Serialize(extendedMap, new JsonSerializerOptions { WriteIndented = true }));
+                    Console.WriteLine($"Wrote mapping: {mapPath} ({extendedMap.Count} entries)");
 
                     if (mappingOnly)
                     {
@@ -100,7 +112,7 @@ namespace DamageSkinExtractor
                     // If user didn’t pass --ids, use all mapped values
                     if (explicitDamageSkinIds == null)
                     {
-                        explicitDamageSkinIds = new HashSet<int>(map.Values);
+                        explicitDamageSkinIds = new HashSet<int>(extendedMap.Values.Select(v => v.DamageSkinId));
                     }
                 }
                 else
@@ -112,9 +124,32 @@ namespace DamageSkinExtractor
                         {
                             return Fail("--assets-only needs --ids or an existing DamageSkinItemMap.json in --out");
                         }
-                        var existing = JsonSerializer.Deserialize<Dictionary<int, int>>(File.ReadAllText(mapPath))
-                                       ?? new Dictionary<int, int>();
-                        explicitDamageSkinIds = new HashSet<int>(existing.Values);
+                        // Try extended format first
+                        try
+                        {
+                            var loadedExt = JsonSerializer.Deserialize<Dictionary<int, DamageSkinItemInfo>>(File.ReadAllText(mapPath));
+                            if (loadedExt != null && loadedExt.Count > 0)
+                            {
+                                extendedMap = loadedExt;
+                                explicitDamageSkinIds = new HashSet<int>(loadedExt.Values.Select(v => v.DamageSkinId));
+                            }
+                        }
+                        catch { }
+
+                        // Fallback to legacy simple mapping
+                        if (explicitDamageSkinIds == null)
+                        {
+                            try
+                            {
+                                var existing = JsonSerializer.Deserialize<Dictionary<int, int>>(File.ReadAllText(mapPath))
+                                               ?? new Dictionary<int, int>();
+                                explicitDamageSkinIds = new HashSet<int>(existing.Values);
+                            }
+                            catch
+                            {
+                                return Fail("Failed to parse DamageSkinItemMap.json in assets-only mode");
+                            }
+                        }
                     }
                 }
 
@@ -128,6 +163,19 @@ namespace DamageSkinExtractor
                 Console.WriteLine($"Exporting damage skin assets to {dsOut}");
                 DumpDamageSkinAssets(maplePath, explicitDamageSkinIds, dsOut);
                 Console.WriteLine($"Export complete. Output: {dsOut}");
+
+                // Export item icons into the corresponding damageSkinID subfolder and update the map with icon paths
+                if (extendedMap == null && File.Exists(mapPath))
+                {
+                    try { extendedMap = JsonSerializer.Deserialize<Dictionary<int, DamageSkinItemInfo>>(File.ReadAllText(mapPath)); } catch { extendedMap = null; }
+                }
+                if (extendedMap != null && extendedMap.Count > 0)
+                {
+                    int saved = DumpItemIcons(maplePath, extendedMap, dsOut, explicitDamageSkinIds, verbose);
+                    Console.WriteLine($"Saved {saved} item icons under {dsOut}");
+                    // Write back the updated map (with icon relative paths)
+                    File.WriteAllText(mapPath, JsonSerializer.Serialize(extendedMap, new JsonSerializerOptions { WriteIndented = true }));
+                }
                 return 0;
             }
             catch (Exception ex)
@@ -296,6 +344,120 @@ Options:
             return result;
         }
 
+
+        private static Dictionary<int, DamageSkinItemInfo> BuildItemToDamageSkinInfoMap(string maplePath, bool verbose)
+        {
+            // 1) Build the basic item->damageSkin map
+            var basicMap = BuildItemToDamageSkinMap(maplePath, verbose);
+
+            // 2) Read String.wz/Consume.img for name/desc
+            var nameDesc = ReadConsumeNameDescMap(maplePath, verbose);
+
+            // 3) Compose extended entries
+            var extended = new Dictionary<int, DamageSkinItemInfo>();
+            foreach (var kvp in basicMap)
+            {
+                int itemId = kvp.Key;
+                int dsId = kvp.Value;
+                nameDesc.TryGetValue(itemId, out var nd);
+                extended[itemId] = new DamageSkinItemInfo
+                {
+                    ItemId = itemId,
+                    DamageSkinId = dsId,
+                    Name = nd.name ?? string.Empty,
+                    Desc = nd.desc ?? string.Empty,
+                    Icon = string.Empty // will be populated after we dump icons
+                };
+            }
+
+            if (verbose) Console.WriteLine($"Built extended mapping with {extended.Count} entries (name/desc included)");
+            return extended;
+        }
+
+        private static Dictionary<int, (string name, string desc)> ReadConsumeNameDescMap(string maplePath, bool verbose)
+        {
+            var result = new Dictionary<int, (string name, string desc)>();
+
+            string stringDir = Path.Combine(maplePath, "String");
+            var stringWzPaths = new List<string>();
+
+            if (Directory.Exists(stringDir))
+            {
+                stringWzPaths.AddRange(Directory.GetFiles(stringDir, "*.wz"));
+            }
+            else
+            {
+                string singlePath = Path.Combine(maplePath, "String.wz");
+                if (File.Exists(singlePath))
+                {
+                    stringWzPaths.Add(singlePath);
+                }
+            }
+
+            if (stringWzPaths.Count == 0)
+            {
+                if (verbose) Console.WriteLine($"No String WZ files found under {stringDir} or {Path.Combine(maplePath, "String.wz")}.");
+                return result;
+            }
+
+            var parsed = new List<WzFile>();
+            try
+            {
+                foreach (var path in stringWzPaths)
+                {
+                    try
+                    {
+                        var wz = new WzFile(path, WzMapleVersion.CLASSIC);
+                        var st = wz.ParseWzFile();
+                        if (st == WzFileParseStatus.Success)
+                        {
+                            parsed.Add(wz);
+                            if (verbose) Console.WriteLine($"  Loaded String: {Path.GetFileName(path)}");
+                        }
+                        else
+                        {
+                            wz.Dispose();
+                            if (verbose) Console.WriteLine($"  Skipped String: {Path.GetFileName(path)}: {st}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        if (verbose) Console.WriteLine($"  Failed to open String WZ {Path.GetFileName(path)}: {ex.Message}");
+                    }
+                }
+
+                foreach (var wz in parsed)
+                {
+                    foreach (var img in EnumerateAllImages(wz.WzDirectory))
+                    {
+                        if (!img.Name.Equals("Consume.img", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        try { img.ParseImage(); } catch { }
+
+                        foreach (var prop in img.WzProperties)
+                        {
+                            if (prop is WzSubProperty node)
+                            {
+                                string nodeTrim = node.Name.TrimStart('0');
+                                if (!int.TryParse(nodeTrim, out int itemId)) continue;
+
+                                string name = (node["name"] as WzStringProperty)?.GetString() ?? string.Empty;
+                                string desc = (node["desc"] as WzStringProperty)?.GetString() ?? string.Empty;
+                                result[itemId] = (name, desc);
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var wz in parsed) wz.Dispose();
+            }
+
+            if (verbose) Console.WriteLine($"Read name/desc for {result.Count} items from String.wz/Consume.img");
+            return result;
+        }
 
         private static HashSet<int> GetCandidateDamageSkinItemIdsFromStringWz(string maplePath, bool verbose)
         {
@@ -725,6 +887,282 @@ Options:
                 }
             }
             return null;
+        }
+
+        // ---- Icon extraction (Item/Consume) ----
+
+        private static int DumpItemIcons(string maplePath,
+                                         Dictionary<int, DamageSkinItemInfo> extendedMap,
+                                         string dsOut,
+                                         HashSet<int> onlyDamageSkinIds,
+                                         bool verbose)
+        {
+            // Determine dumpBase from dsOut = <dumpBase>/Etc.wz/_Canvas/DamageSkin.img
+            var dumpBaseDir = new DirectoryInfo(dsOut).Parent?.Parent?.Parent;
+            if (dumpBaseDir == null)
+            {
+                if (verbose) Console.WriteLine($"Failed to resolve dump base from path: {dsOut}");
+                return 0;
+            }
+
+            // Load Item/Consume/*.wz and Item/Consume/_Canvas/*.wz
+            string consumeDir = Path.Combine(maplePath, "Item", "Consume");
+            if (!Directory.Exists(consumeDir))
+            {
+                if (verbose) Console.WriteLine($"Consume directory not found: {consumeDir}");
+                return 0;
+            }
+
+            var consumeWzFiles = Directory.GetFiles(consumeDir, "*.wz", SearchOption.TopDirectoryOnly);
+            var consumeCanvasWzFiles = Directory.Exists(Path.Combine(consumeDir, "_Canvas"))
+                ? Directory.GetFiles(Path.Combine(consumeDir, "_Canvas"), "*.wz", SearchOption.TopDirectoryOnly)
+                : Array.Empty<string>();
+
+            var parsedConsume = new List<WzFile>();
+            var parsedCanvas = new List<WzFile>();
+            try
+            {
+                foreach (var p in consumeWzFiles)
+                {
+                    try
+                    {
+                        var wz = new WzFile(p, WzMapleVersion.CLASSIC);
+                        if (wz.ParseWzFile() == WzFileParseStatus.Success) parsedConsume.Add(wz); else wz.Dispose();
+                    }
+                    catch { }
+                }
+                foreach (var p in consumeCanvasWzFiles)
+                {
+                    try
+                    {
+                        var wz = new WzFile(p, WzMapleVersion.CLASSIC);
+                        if (wz.ParseWzFile() == WzFileParseStatus.Success) parsedCanvas.Add(wz); else wz.Dispose();
+                    }
+                    catch { }
+                }
+
+                int saved = 0;
+                foreach (var kvp in extendedMap)
+                {
+                    int itemId = kvp.Key;
+                    int dsId = kvp.Value.DamageSkinId;
+                    if (onlyDamageSkinIds != null && onlyDamageSkinIds.Count > 0 && !onlyDamageSkinIds.Contains(dsId))
+                        continue;
+
+                    string relIconPath = Path.Combine("Etc.wz", "_Canvas", "DamageSkin.img", dsId.ToString(), $"icon_{itemId}.png");
+                    string fullIconPath = Path.Combine(dumpBaseDir.FullName, relIconPath);
+
+                    if (TrySaveItemIconFromConsume(parsedConsume, parsedCanvas, itemId, fullIconPath, verbose))
+                    {
+                        kvp.Value.Icon = relIconPath.Replace('\\', '/');
+                        saved++;
+                    }
+                }
+                return saved;
+            }
+            finally
+            {
+                foreach (var wz in parsedConsume) wz.Dispose();
+                foreach (var wz in parsedCanvas) wz.Dispose();
+            }
+        }
+
+        private static bool TrySaveItemIconFromConsume(List<WzFile> consumeFiles, List<WzFile> canvasFiles, int itemId, string pngFullPath, bool verbose)
+        {
+            string idStr = itemId.ToString();
+            string prefixStr = (itemId / 10000).ToString();
+            string[] groupNames = new[] { $"{prefixStr}.img", $"0{prefixStr}.img" };
+            string[] directNames = new[] { $"{idStr}.img", $"0{idStr}.img", $"{itemId:D8}.img" };
+
+            // 1) Try direct images
+            foreach (var wz in consumeFiles)
+            {
+                var img = TryGetImageByNames(wz.WzDirectory, directNames);
+                if (img != null)
+                {
+                    try
+                    {
+                        img.ParseImage();
+                        var info = img["info"] as WzSubProperty;
+                        if (info != null && TrySaveIconFromContainer(info, canvasFiles, pngFullPath, verbose)) return true;
+                    }
+                    catch { }
+                }
+            }
+
+            // 2) Try group images and node lookup
+            foreach (var wz in consumeFiles)
+            {
+                foreach (var g in groupNames)
+                {
+                    var img = wz.WzDirectory.GetImageByName(g);
+                    if (img == null) continue;
+                    try { img.ParseImage(); } catch { }
+                    var node = img[idStr] as WzSubProperty ?? img[$"0{idStr}"] as WzSubProperty;
+                    if (node == null)
+                    {
+                        foreach (var p in img.WzProperties)
+                        {
+                            if (p is WzSubProperty sp)
+                            {
+                                string t = sp.Name.TrimStart('0');
+                                if (int.TryParse(t, out int nid) && nid == itemId) { node = sp; break; }
+                            }
+                        }
+                    }
+                    if (node == null) continue;
+
+                    var info = node["info"] as WzSubProperty;
+                    if (info != null && TrySaveIconFromContainer(info, canvasFiles, pngFullPath, verbose)) return true;
+                    if (TrySaveIconFromContainer(node, canvasFiles, pngFullPath, verbose)) return true;
+                }
+            }
+
+            if (verbose) Console.WriteLine($"  No icon found for item {itemId}");
+            return false;
+        }
+
+        private static bool TrySaveIconFromContainer(WzSubProperty container, List<WzFile> canvasFiles, string pngFullPath, bool verbose)
+        {
+            foreach (var name in new[] { "iconRaw", "icon" })
+            {
+                var prop = container[name];
+                if (prop is WzCanvasProperty canv)
+                {
+                    if (TrySaveCanvas(canv, canvasFiles, pngFullPath, verbose)) return true;
+                }
+                else if (prop is WzUOLProperty uol)
+                {
+                    try
+                    {
+                        var linked = uol.LinkValue;
+                        if (linked is WzCanvasProperty canv2)
+                        {
+                            if (TrySaveCanvas(canv2, canvasFiles, pngFullPath, verbose)) return true;
+                        }
+                        else if (linked is WzSubProperty sub && sub[name] is WzCanvasProperty canv3)
+                        {
+                            if (TrySaveCanvas(canv3, canvasFiles, pngFullPath, verbose)) return true;
+                        }
+                    }
+                    catch { }
+                }
+                else if (prop is WzSubProperty sub2 && sub2[name] is WzCanvasProperty canv4)
+                {
+                    if (TrySaveCanvas(canv4, canvasFiles, pngFullPath, verbose)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TrySaveCanvas(WzCanvasProperty canvasProp, List<WzFile> canvasFiles, string pngFullPath, bool verbose)
+        {
+            try
+            {
+                var linkProp = canvasProp["_outlink"] as WzStringProperty ?? canvasProp["_inlink"] as WzStringProperty;
+                WzCanvasProperty finalCanvas = canvasProp;
+
+                if (linkProp != null)
+                {
+                    var linked = linkProp.GetLinkedWzImageProperty();
+                    if (linked is WzCanvasProperty linkedCanvas)
+                    {
+                        finalCanvas = linkedCanvas;
+                    }
+                    else
+                    {
+                        string linkStr = linked?.WzValue?.ToString() ?? linkProp.Value;
+                        if (!string.IsNullOrEmpty(linkStr))
+                        {
+                            string[] parts = linkStr.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                            int imgIdx = Array.FindIndex(parts, p => p.EndsWith(".img", StringComparison.OrdinalIgnoreCase));
+                            if (imgIdx >= 0)
+                            {
+                                string imgName = parts[imgIdx];
+                                var canvasImage = GetCanvasImage(canvasFiles, imgName);
+                                if (canvasImage != null)
+                                {
+                                    try { canvasImage.ParseImage(); } catch { }
+                                    string[] innerPath = parts.Skip(imgIdx + 1).ToArray();
+                                    var targetProp = FindPropertyByPath(canvasImage, innerPath);
+                                    if (targetProp is WzCanvasProperty targetCanvas)
+                                    {
+                                        finalCanvas = targetCanvas;
+                                    }
+                                    else if (targetProp is WzSubProperty maybeInfo)
+                                    {
+                                        if (maybeInfo[canvasProp.Name] is WzCanvasProperty childCanvas)
+                                        {
+                                            finalCanvas = childCanvas;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                using (var bmp = finalCanvas.PngProperty?.GetImage(false))
+                {
+                    if (bmp == null) return false;
+                    Directory.CreateDirectory(Path.GetDirectoryName(pngFullPath)!);
+                    bmp.Save(pngFullPath, ImageFormat.Png);
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (verbose) Console.WriteLine($"    Failed saving canvas to {pngFullPath}: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static WzImage? GetCanvasImage(List<WzFile> canvasFiles, string imageName)
+        {
+            foreach (var f in canvasFiles)
+            {
+                var img = f.WzDirectory.GetImageByName(imageName);
+                if (img != null) return img;
+            }
+            return null;
+        }
+
+        private static WzImage? TryGetImageByNames(WzDirectory dir, IEnumerable<string> names)
+        {
+            foreach (var name in names)
+            {
+                var img = dir.GetImageByName(name);
+                if (img != null) return img;
+            }
+            foreach (var sub in dir.WzDirectories)
+            {
+                var found = TryGetImageByNames(sub, names);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static WzImageProperty? FindPropertyByPath(WzImage image, IEnumerable<string> segments)
+        {
+            if (image == null) return null;
+            IEnumerable<WzImageProperty> currentList = image.WzProperties;
+            WzImageProperty? current = null;
+            foreach (var raw in segments)
+            {
+                var seg = raw?.Trim();
+                if (string.IsNullOrEmpty(seg)) continue;
+                WzImageProperty? next = null;
+                foreach (var p in currentList)
+                {
+                    if (p.Name.Equals(seg, StringComparison.OrdinalIgnoreCase)) { next = p; break; }
+                }
+                if (next == null) return current;
+                current = next;
+                if (current is WzSubProperty sp) currentList = sp.WzProperties;
+                else if (current is WzConvexProperty cp) currentList = cp.WzProperties;
+                else currentList = Array.Empty<WzImageProperty>();
+            }
+            return current;
         }
     }
 }
